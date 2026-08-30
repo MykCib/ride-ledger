@@ -1,31 +1,8 @@
-# XOSS G-933835 and Arduino UNO R4 WiFi
+# XOSS Ride Ledger
 
-This project discovers a nearby XOSS BLE computer and performs read-only protocol
-probes. It deliberately does not write settings or firmware.
-
-## Build and upload
-
-```sh
-arduino-cli lib install ArduinoBLE
-arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi arduino/xoss_scanner
-arduino-cli upload -p /dev/ttyACM0 --fqbn arduino:renesas_uno:unor4wifi arduino/xoss_scanner
-arduino-cli monitor -p /dev/ttyACM0 -c baudrate=115200
-```
-
-The computer must be in its Bluetooth connection/sync screen and disconnected
-from the XOSS phone app while testing.
-
-## Linux probe
-
-The Python probe is useful for inspecting services and testing the same protocol
-from the host computer. It requires `bleak` and accepts a device-name substring.
-
-```sh
-python3 -m venv .venv
-. .venv/bin/activate
-pip install bleak
-python host/xoss_probe.py 'XOSS G-933835'
-```
+Downloads XOSS G-933835 workouts over Bluetooth LE and provides a local route
+analytics dashboard. The dashboard reads FIT files, caches historical weather,
+and does not modify the device.
 
 Download the G-933835 ride index and FIT files:
 
@@ -33,10 +10,6 @@ Download the G-933835 ride index and FIT files:
 mkdir -p data
 ../.venv/bin/python host/xoss_sync.py
 ```
-
-The Arduino is not required for the homeserver. Any Linux computer with a
-working Bluetooth LE adapter can connect directly to the XOSS. The UNO R4
-scanner is kept separately for hardware experiments.
 
 Run continuously as a user service on the homeserver:
 
@@ -73,8 +46,36 @@ systemctl --user enable --now ride-ledger.service
 journalctl --user -u ride-ledger.service -f
 ```
 
-The dashboard does not need the Arduino. It needs only the downloaded FIT files
-and Python packages installed in `.venv`.
+The dashboard needs only the downloaded FIT files and the Python packages
+installed in `.venv`.
+
+## Docker Dashboard
+
+The web dashboard can run independently in Docker. The host only needs Docker
+and the downloaded `data/` directory:
+
+```sh
+cd ~/www/xoss-uno-r4
+systemctl --user disable --now ride-ledger.service  # if the native service is enabled
+docker compose up -d --build
+```
+
+Open `http://SERVER-IP:8080`. The XOSS watcher continues to run separately on
+the host and writes new FIT files into `data/`. The dashboard writes only its
+derived JSON caches there and never modifies FIT files. Restarting the
+container is not required for new workouts.
+
+View dashboard logs:
+
+```sh
+docker compose logs -f ride-ledger
+```
+
+Stop the dashboard:
+
+```sh
+docker compose down
+```
 
 Weather enrichment runs automatically after the XOSS watcher completes a sync.
 It uses the historical Open-Meteo archive and stores one JSON cache file per
@@ -96,7 +97,7 @@ Install Python 3, a Bluetooth LE adapter, and Bluetooth service support. Then:
 ```sh
 cd ~/www/xoss-uno-r4
 python3 -m venv .venv
-.venv/bin/pip install bleak
+.venv/bin/pip install bleak fitparse
 mkdir -p data ~/.config/systemd/user
 cp systemd/xoss-watcher.service ~/.config/systemd/user/
 systemctl --user daemon-reload
