@@ -1,0 +1,16 @@
+[Unit]
+Description=XOSS bicycle computer workout watcher
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/www/xoss-uno-r4
+ExecStart=%h/www/xoss-uno-r4/.venv/bin/python %h/www/xoss-uno-r4/host/watch_xoss.py
+Restart=always
+RestartSec=10
+Environment="XOSS_NAME=XOSS G-933835"
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
