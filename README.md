@@ -29,10 +29,10 @@ Start the dashboard directly during development:
 
 ```sh
 cd ~/www/xoss-uno-r4
-.venv/bin/python -m flask --app web.app run --host 0.0.0.0 --port 8080
+.venv/bin/python -m flask --app web.app run --host 0.0.0.0 --port 8124
 ```
 
-Open `http://localhost:8080` or `http://SERVER-IP:8080`. The app reads the
+Open `http://localhost:8124` or `http://SERVER-IP:8124`. The app reads the
 FIT directory on every request, so press `Refresh` after the watcher downloads
 a new ride.
 
@@ -60,7 +60,7 @@ systemctl --user disable --now ride-ledger.service  # if the native service is e
 docker compose up -d --build
 ```
 
-Open `http://SERVER-IP:8080`. The XOSS watcher continues to run separately on
+Open `http://SERVER-IP:8124`. The XOSS watcher continues to run separately on
 the host and writes new FIT files into `data/`. The dashboard writes only its
 derived JSON caches there and never modifies FIT files. Restarting the
 container is not required for new workouts.
