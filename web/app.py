@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from bisect import bisect_left
 import json
 from math import atan2, cos, floor, isfinite, radians, sin, sqrt
 import os
@@ -33,7 +34,7 @@ WORKOUTS_CACHE_VERSION = 5
 COMMUTES_CACHE_VERSION = 4
 SEGMENTS_CACHE_VERSION = 2
 WEATHER_ANALYSIS_CACHE_VERSION = 1
-INSIGHTS_CACHE_VERSION = 2
+INSIGHTS_CACHE_VERSION = 3
 LOCATION_NAMES_PATH = DATA / "location_names.json"
 DEFAULT_ANALYTICS_TIMEZONE = "Europe/Vilnius"
 STOP_SPEED_MPS = 0.5
@@ -44,6 +45,8 @@ RECORD_INTERVAL_SECONDS = 1
 ENDPOINT_CLUSTER_RADIUS_M = 500
 DAY_SECONDS = 24 * 60 * 60
 ROUTE_SEGMENT_COUNT = 10
+FASTEST_SECTION_DISTANCES_M = (1000, 2000, 5000)
+SPEED_DISTRIBUTION_BIN_KMH = 5
 GPS_GAP_SECONDS = 5
 LONG_STOP_SECONDS = 15 * 60
 MAX_REASONABLE_SPEED_KMH = 120
@@ -489,6 +492,71 @@ def interpolate_track_sample(progress, target):
                 "timestamp": timestamp,
             }
     return {"point": progress[-1]["point"], "timestamp": progress[-1]["timestamp"]}
+
+
+def timestamp_at_distance(progress, distances, target):
+    index = bisect_left(distances, target)
+    if index <= 0:
+        return progress[0]["timestamp"]
+    if index >= len(progress):
+        return progress[-1]["timestamp"]
+    current = progress[index]
+    previous = progress[index - 1]
+    if target == current["distance"]:
+        return current["timestamp"]
+    span = current["distance"] - previous["distance"]
+    if not span or previous["timestamp"] is None or current["timestamp"] is None:
+        return current["timestamp"]
+    ratio = (target - previous["distance"]) / span
+    return previous["timestamp"] + (current["timestamp"] - previous["timestamp"]) * ratio
+
+
+def fastest_section_from_progress(progress, total_distance, target_distance):
+    if len(progress) < 2 or total_distance < target_distance or target_distance <= 0:
+        return None
+    distances = [sample["distance"] for sample in progress]
+    candidate_distances = {
+        distance
+        for distance in distances
+        if 0 <= distance <= total_distance - target_distance
+    }
+    candidate_distances.update(
+        distance - target_distance
+        for distance in distances
+        if 0 <= distance - target_distance <= total_distance - target_distance
+    )
+    fastest = None
+    for start_distance in sorted(candidate_distances):
+        start_time = timestamp_at_distance(progress, distances, start_distance)
+        end_distance = start_distance + target_distance
+        if start_time is None:
+            continue
+        end_time = timestamp_at_distance(progress, distances, end_distance)
+        if end_time is None or end_time <= start_time:
+            continue
+        duration = (end_time - start_time).total_seconds()
+        if duration <= 0:
+            continue
+        if fastest is None or duration < fastest["time_seconds"]:
+            fastest = {
+                "time_seconds": duration,
+                "speed_kmh": target_distance / duration * 3.6,
+                "start_km": start_distance / 1000,
+                "end_km": end_distance / 1000,
+            }
+    if fastest is None:
+        return None
+    return {
+        "time_seconds": number(fastest["time_seconds"], 1),
+        "speed_kmh": number(fastest["speed_kmh"], 1),
+        "start_km": number(fastest["start_km"], 2),
+        "end_km": number(fastest["end_km"], 2),
+    }
+
+
+def fastest_distance_section(track, target_distance):
+    progress, total_distance = track_progress(track)
+    return fastest_section_from_progress(progress, total_distance, target_distance)
 
 
 def resample_route(track, segment_count=ROUTE_SEGMENT_COUNT):
@@ -1428,9 +1496,28 @@ def workout_insights():
     return jsonify(_insights_cache)
 
 
+def speed_distribution(buckets):
+    if not buckets:
+        return []
+    width = SPEED_DISTRIBUTION_BIN_KMH
+    result = []
+    for start in range(0, max(buckets) + width, width):
+        bucket = buckets.get(start, {"point_count": 0, "ride_ids": set()})
+        result.append({
+            "label": f"{start:g}-{start + width:g}",
+            "min_kmh": start,
+            "max_kmh": start + width,
+            "point_count": bucket["point_count"],
+            "ride_count": len(bucket["ride_ids"]),
+        })
+    return result
+
+
 def build_workout_insights(items):
     timezone_name, timezone_value = analytics_timezone()
     bins = [[] for _ in range(10)]
+    speed_buckets = {}
+    fastest_sections = {target: None for target in FASTEST_SECTION_DISTANCES_M}
     weekdays = [0] * 7
     departure_hours = [0] * 24
     calendar = {}
@@ -1448,9 +1535,30 @@ def build_workout_insights(items):
                 entry["distance_km"] += distance
         try:
             track = parse_workout(DATA / item["file"], include_track=True)["track"]
+            progress, total_distance = track_progress(track)
+            for target_distance in FASTEST_SECTION_DISTANCES_M:
+                section = fastest_section_from_progress(progress, total_distance, target_distance)
+                if section is None:
+                    continue
+                current = fastest_sections[target_distance]
+                if current is None or section["time_seconds"] < current["time_seconds"]:
+                    fastest_sections[target_distance] = {
+                        "distance_km": target_distance // 1000,
+                        **section,
+                        "ride_id": item["id"],
+                        "date": item.get("date"),
+                    }
             distances = [point["distance_m"] for point in track if point["distance_m"] is not None]
             total = max(distances) if distances else 0
             for point in track:
+                speed = finite_number(point.get("speed"))
+                if speed is not None:
+                    speed_kmh = speed * 3.6
+                    if 0 <= speed_kmh <= MAX_REASONABLE_SPEED_KMH:
+                        start = floor(speed_kmh / SPEED_DISTRIBUTION_BIN_KMH) * SPEED_DISTRIBUTION_BIN_KMH
+                        bucket = speed_buckets.setdefault(start, {"point_count": 0, "ride_ids": set()})
+                        bucket["point_count"] += 1
+                        bucket["ride_ids"].add(item["id"])
                 if point["speed"] is not None and total:
                     index = min(9, int((point["distance_m"] or 0) / total * 10))
                     bins[index].append(point["speed"] * 3.6)
@@ -1470,6 +1578,19 @@ def build_workout_insights(items):
         ],
         "fastest": max(speed_items, key=lambda item: finite_number(item["average_speed_kmh"]), default=None),
         "longest": max(distance_items, key=lambda item: finite_number(item["distance_km"]), default=None),
+        "fastest_sections": [
+            fastest_sections[target] or {
+                "distance_km": target // 1000,
+                "time_seconds": None,
+                "speed_kmh": None,
+                "start_km": None,
+                "end_km": None,
+                "ride_id": None,
+                "date": None,
+            }
+            for target in FASTEST_SECTION_DISTANCES_M
+        ],
+        "speed_distribution": speed_distribution(speed_buckets),
     }
 
 

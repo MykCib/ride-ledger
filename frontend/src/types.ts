@@ -198,4 +198,24 @@ export interface Insights {
   calendar: ActivityDay[];
   fastest: WorkoutSummary | null;
   longest: WorkoutSummary | null;
+  fastest_sections: FastestSection[];
+  speed_distribution: SpeedDistributionBin[];
+}
+
+export interface FastestSection {
+  distance_km: number;
+  time_seconds: number | null;
+  speed_kmh: number | null;
+  start_km: number | null;
+  end_km: number | null;
+  ride_id: string | null;
+  date: string | null;
+}
+
+export interface SpeedDistributionBin {
+  label: string;
+  min_kmh: number;
+  max_kmh: number;
+  point_count: number;
+  ride_count: number;
 }

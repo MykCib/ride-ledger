@@ -6,7 +6,7 @@ import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
 import { formatClock, formatDuration, formatSpeed, formatTime, formatVerticalRate, formatWorkoutTitle } from '../format';
 import type { CommuteAnalysis, Insights, RouteAssignment, RouteDirection, RouteOverlay, SegmentAnalysis, TrackPoint, WeatherAnalysis, WeatherSummary, WorkoutDetail, WorkoutSummary } from '../types';
 import { AllRoutesMap, RouteMap } from './Maps';
-import { ElevationChart, SegmentChart, SpeedChart, WeeklyChart } from './Charts';
+import { BarChart, ElevationChart, SegmentChart, SpeedChart, WeeklyChart } from './Charts';
 import { CommuteSection } from './Commutes';
 import { SegmentsSection } from './Segments';
 import { ActivitySection } from './Activity';
@@ -144,6 +144,38 @@ function InsightsSection({ insights }: { insights: Insights | null }) {
           <div className="insight-row"><span>Fastest average</span><b>{insights.fastest ? `${(insights.fastest.average_speed_kmh ?? 0).toFixed(1)} km/h` : '—'}</b></div>
           <div className="insight-row"><span>Longest ride</span><b>{insights.longest ? `${(insights.longest.distance_km ?? 0).toFixed(1)} km` : '—'}</b></div>
         </>}
+      </div>
+    </section>
+  );
+}
+
+function PerformanceSection({ insights }: { insights: Insights }) {
+  return (
+    <section className="performance-analysis">
+      <div className="performance-records">
+        <div className="section-head"><h2>Fastest rolling sections</h2><span>ARCHIVE RECORDS</span></div>
+        <p className="chart-note performance-note">Best elapsed time over exactly 1, 2, and 5 km windows. The source ride links to its full route.</p>
+        <div className="performance-record-grid">
+          {insights.fastest_sections.map((section) => {
+            const hasRecord = section.time_seconds != null && section.ride_id;
+            return (
+              <article className={`performance-record${hasRecord ? '' : ' performance-record-empty'}`} key={section.distance_km}>
+                <p className="eyebrow">{section.distance_km} KM SECTION</p>
+                {hasRecord ? <>
+                  <strong>{formatDuration(section.time_seconds)}</strong>
+                  <span>{formatSpeed(section.speed_kmh)}</span>
+                  {section.start_km != null && section.end_km != null && <small>{section.start_km.toFixed(2)} - {section.end_km.toFixed(2)} km in the ride</small>}
+                  <Link className="record-ride" to={`/rides/${section.ride_id}`}>{formatWorkoutTitle(section.date)} <b>-&gt;</b></Link>
+                </> : <p>No complete section in the archive yet.</p>}
+              </article>
+            );
+          })}
+        </div>
+      </div>
+      <div className="chart-card speed-distribution">
+        <div className="section-head"><h2>Speed distribution</h2><span>KM/H · RECORDED SAMPLES</span></div>
+        {insights.speed_distribution.length ? <div className="chart-wrap"><BarChart values={insights.speed_distribution.map((bin) => bin.point_count)} labels={insights.speed_distribution.map((bin) => bin.label)} fill="rgba(77,107,56,.68)" /></div> : <p className="weather-empty">No valid speed samples yet.</p>}
+        <p className="chart-note">Each bar counts recorded speed samples; with one-second FIT records this approximates time spent at each pace.</p>
       </div>
     </section>
   );
@@ -454,6 +486,7 @@ function InsightsContent({ insights, weather }: { insights: Insights | null; wea
   return (
     <div className="page-stack insights-page-content">
       <InsightsSection insights={insights} />
+      {insights && <PerformanceSection insights={insights} />}
       <WeatherSection analysis={weather} />
       <ActivitySection insights={insights} />
     </div>

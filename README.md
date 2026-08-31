@@ -68,6 +68,9 @@ the FIT session's elapsed time minus moving time; individual intervals are
 inferred from unchanged-distance timestamp gaps and sustained speeds at or
 below 0.5 m/s, with intervals shorter than five seconds ignored.
 
+Archive insights include the fastest rolling 1, 2, and 5 km sections, linked to
+their source rides, plus a speed distribution based on recorded FIT samples.
+
 Repeated rides are grouped by endpoints within 500 metres. The direction with
 the earlier typical departure is labelled outbound and the reverse direction return.
 Route cards show median departure and arrival times, average elapsed commute

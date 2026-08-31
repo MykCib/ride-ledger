@@ -25,11 +25,11 @@
 
 ## Phase 1: Ride Performance
 
-- [ ] Add fastest 1 km section.
-- [ ] Add fastest 2 km section.
-- [ ] Add fastest 5 km section.
-- [ ] Add personal-best records for repeated route sections.
-- [ ] Add speed distribution histogram.
+- [x] Add fastest 1 km section.
+- [x] Add fastest 2 km section.
+- [x] Add fastest 5 km section.
+- [x] Add personal-best records for repeated route sections.
+- [x] Add speed distribution histogram.
 - [x] Add elevation profile chart.
 - [x] Add climbing rate and descent rate.
 - [x] Add moving time versus elapsed time.

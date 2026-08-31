@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from web.app import COMMUTES_CACHE_VERSION, INSIGHTS_CACHE_VERSION, WORKOUTS_CACHE_VERSION, app, build_commute_analysis, build_data_quality, build_route_segments, build_weather_analysis, build_workout_insights, route_performance, vertical_rate
+from web.app import COMMUTES_CACHE_VERSION, INSIGHTS_CACHE_VERSION, WORKOUTS_CACHE_VERSION, app, build_commute_analysis, build_data_quality, build_route_segments, build_weather_analysis, build_workout_insights, fastest_distance_section, route_performance, vertical_rate
 
 
 def ride(ride_id, date, distance=5.0, speed=20.0):
@@ -139,7 +139,7 @@ class RouteAnalysisTests(unittest.TestCase):
     def test_commute_cache_version_matches_current_metric_schema(self):
         self.assertEqual(COMMUTES_CACHE_VERSION, 4)
         self.assertEqual(WORKOUTS_CACHE_VERSION, 5)
-        self.assertEqual(INSIGHTS_CACHE_VERSION, 2)
+        self.assertEqual(INSIGHTS_CACHE_VERSION, 3)
 
     def test_vertical_rate_uses_moving_time(self):
         self.assertEqual(vertical_rate(100, 1800), 200.0)
@@ -260,6 +260,55 @@ class RouteAnalysisTests(unittest.TestCase):
         self.assertEqual(result["calendar"], [
             {"date": "2026-08-31", "ride_count": 2, "distance_km": 11.0},
             {"date": "2026-09-01", "ride_count": 1, "distance_km": 7.0},
+        ])
+
+    def test_fastest_distance_section_uses_interpolated_timestamps(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        track = []
+        elapsed = 0
+        for index in range(21):
+            if index:
+                elapsed += 20 if index <= 10 else 10
+            track.append({
+                "lat": 54.7000 + index * 0.001,
+                "lon": 25.2100,
+                "distance_m": index * 100,
+                "t": (start + timedelta(seconds=elapsed)).isoformat(),
+            })
+
+        result = fastest_distance_section(track, 1000)
+
+        self.assertEqual(result["time_seconds"], 100.0)
+        self.assertEqual(result["speed_kmh"], 36.0)
+        self.assertEqual(result["start_km"], 1.0)
+        self.assertEqual(result["end_km"], 2.0)
+        self.assertIsNone(fastest_distance_section(track, 5000))
+
+    def test_activity_insights_include_fastest_sections_and_speed_distribution(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        track = [
+            {
+                "lat": 54.7000 + index * 0.001,
+                "lon": 25.2100,
+                "distance_m": index * 100,
+                "t": (start + timedelta(seconds=index * 10)).isoformat(),
+                "speed": 0 if index == 0 else (1 if index < 10 else 2),
+            }
+            for index in range(21)
+        ]
+        item = ride("tracked", "2026-01-01T08:00:00+00:00")
+        item["file"] = "tracked.fit"
+
+        with patch("web.app.parse_workout", return_value={"track": track}):
+            result = build_workout_insights([item])
+
+        self.assertEqual([section["distance_km"] for section in result["fastest_sections"]], [1, 2, 5])
+        self.assertEqual(result["fastest_sections"][0]["ride_id"], "tracked")
+        self.assertEqual(result["fastest_sections"][1]["speed_kmh"], 36.0)
+        self.assertIsNone(result["fastest_sections"][2]["time_seconds"])
+        self.assertEqual(result["speed_distribution"][:2], [
+            {"label": "0-5", "min_kmh": 0, "max_kmh": 5, "point_count": 10, "ride_count": 1},
+            {"label": "5-10", "min_kmh": 5, "max_kmh": 10, "point_count": 11, "ride_count": 1},
         ])
 
     def test_repeated_routes_are_divided_into_supported_geographic_segments(self):
