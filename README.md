@@ -1,15 +1,32 @@
 # XOSS Ride Ledger
 
-Downloads XOSS G-933835 workouts over Bluetooth LE and provides a local route
-analytics dashboard. The dashboard reads FIT files, caches historical weather,
-and does not modify the device.
+Downloads XOSS G-933835 workouts over Bluetooth LE through an Arduino UNO R4
+WiFi bridge and provides a local route analytics dashboard. The dashboard reads
+FIT files, caches historical weather, and does not modify the device.
 
 Download the G-933835 ride index and FIT files:
 
 ```sh
 mkdir -p data
-../.venv/bin/python host/xoss_sync.py
+.venv/bin/python host/board_sync.py
 ```
+
+The UNO R4 WiFi must remain connected by USB. The bridge is read-only and the
+XOSS should be disconnected from the phone app while it is syncing.
+
+## UNO R4 WiFi Bridge
+
+Install the Arduino CLI and board support, then compile and upload the bridge:
+
+```sh
+arduino-cli core install arduino:renesas_uno
+arduino-cli lib install ArduinoBLE
+arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi arduino/xoss-board
+arduino-cli upload --port /dev/ttyACM0 --fqbn arduino:renesas_uno:unor4wifi arduino/xoss-board
+```
+
+The host user needs access to `/dev/ttyACM0` through the `dialout` group. The
+service uses the stable `/dev/serial/by-id/` path automatically.
 
 Run continuously as a user service on the homeserver:
 
@@ -28,7 +45,7 @@ Stop it with `systemctl --user disable --now xoss-watcher.service`.
 Start the dashboard directly during development:
 
 ```sh
-cd ~/www/xoss-uno-r4
+cd ~/www/ride-ledger
 .venv/bin/python -m flask --app web.app run --host 0.0.0.0 --port 8124
 ```
 
@@ -55,7 +72,7 @@ The web dashboard can run independently in Docker. The host only needs Docker
 and the downloaded `data/` directory:
 
 ```sh
-cd ~/www/xoss-uno-r4
+cd ~/www/ride-ledger
 systemctl --user disable --now ride-ledger.service  # if the native service is enabled
 docker compose up -d --build
 ```
@@ -92,21 +109,21 @@ FIT files are skipped.
 
 ## Homeserver prerequisites
 
-Install Python 3, a Bluetooth LE adapter, and Bluetooth service support. Then:
+Install Python 3 and the Arduino UNO R4 WiFi USB bridge. Then:
 
 ```sh
-cd ~/www/xoss-uno-r4
+cd ~/www/ride-ledger
 python3 -m venv .venv
-.venv/bin/pip install bleak fitparse
+.venv/bin/pip install -r requirements-web.txt -r requirements-host.txt
 mkdir -p data ~/.config/systemd/user
 cp systemd/xoss-watcher.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now xoss-watcher.service
 ```
 
-The server user needs permission to access Bluetooth through BlueZ. Confirm
-that scanning works with `bluetoothctl scan on` before starting the service.
-Keep the XOSS disconnected from the phone app while it is syncing.
+The server user needs permission to access the UNO serial port through the
+`dialout` group. Keep the XOSS disconnected from the phone app while it is
+syncing.
 
 The public protocol implementation used as reference is:
 https://github.com/ekspla/xoss_sync

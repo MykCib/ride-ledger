@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/www/xoss-uno-r4
-ExecStart=%h/www/xoss-uno-r4/.venv/bin/python -m flask --app web.app run --host 0.0.0.0 --port 8124
+WorkingDirectory=%h/www/ride-ledger
+ExecStart=%h/www/ride-ledger/.venv/bin/python -m flask --app web.app run --host 0.0.0.0 --port 8124
 Restart=always
 RestartSec=5
 Environment=FLASK_ENV=production

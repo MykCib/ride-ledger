@@ -25,7 +25,16 @@
     <section class="insights"><div class="chart-card"><div class="section-head"><h2>Route segments</h2><span>AVERAGE SPEED · ROUTE PROGRESS</span></div><div class="chart-wrap"><canvas id="segment-chart"></canvas></div><p class="chart-note">Each ride is split into ten equal distance segments. This shows where your repeated route tends to slow down or open up.</p></div><div class="insight-card" id="insight-card"></div></section>
     <section class="content-grid">
       <div class="ride-list-wrap"><div class="section-head"><h2>Workouts</h2><span id="ride-count"></span></div><div id="ride-list" class="ride-list"></div></div>
-      <aside class="detail" id="detail"><div class="empty-state"><span class="empty-icon">+</span><h2>Select a workout</h2><p>Your route and ride details will appear here.</p></div></aside>
+      <aside class="detail" id="detail">
+        <div class="empty-state" id="empty-detail"><span class="empty-icon">+</span><h2>Select a workout</h2><p>Your route and ride details will appear here.</p></div>
+        <div id="detail-content" hidden>
+          <div class="detail-head"><div><p>WORKOUT</p><h2 id="detail-date"></h2></div><div id="detail-distance" class="ride-distance"></div></div>
+          <div id="map" class="map"></div>
+          <div class="speed-chart"><div class="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div class="chart-wrap"><canvas id="speed-chart"></canvas></div></div>
+          <div id="detail-stats" class="detail-grid"></div>
+          <p id="route-note" class="route-note"></p>
+        </div>
+      </aside>
     </section>
   </main>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

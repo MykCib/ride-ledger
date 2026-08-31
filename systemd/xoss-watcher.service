@@ -1,15 +1,15 @@
 [Unit]
-Description=XOSS bicycle computer workout watcher
+Description=XOSS bicycle computer workout watcher via UNO R4 WiFi
 After=bluetooth.target
 Wants=bluetooth.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/www/xoss-uno-r4
-ExecStart=%h/www/xoss-uno-r4/.venv/bin/python %h/www/xoss-uno-r4/host/watch_xoss.py
+WorkingDirectory=%h/www/ride-ledger
+ExecStart=/usr/bin/sg dialout -c '%h/www/ride-ledger/.venv/bin/python %h/www/ride-ledger/host/watch_board.py'
 Restart=always
 RestartSec=10
-Environment="XOSS_NAME=XOSS G-933835"
+Environment="XOSS_BOARD_PORT=/dev/serial/by-id/usb-Arduino_UNO_WiFi_R4_CMSIS-DAP_48CA435CF8F0-if01"
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

@@ -8,12 +8,14 @@ from fitparse import FitFile
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 app = Flask(__name__)
+app.json.sort_keys = False
 _insights_cache = None
 _insights_signature = None
 _workouts_cache = None
 _workouts_signature = None
 _routes_cache = None
 _routes_signature = None
+_detail_cache = {}
 
 
 def degrees(value):
@@ -27,25 +29,33 @@ def number(value, digits=1):
 def parse_workout(path, include_track=False):
     fit = FitFile(str(path))
     records = []
+    point_count = 0
+    first_point_time = None
     session = {}
     for message in fit.get_messages():
-        values = {field.name: field.value for field in message if field.value is not None}
         if message.name == "record":
+            values = {field.name: field.value for field in message if field.value is not None}
             lat = degrees(values.get("position_lat"))
             lon = degrees(values.get("position_long"))
             if lat is not None and lon is not None:
-                records.append({
-                    "lat": round(lat, 6),
-                    "lon": round(lon, 6),
-                    "t": values.get("timestamp").replace(tzinfo=timezone.utc).isoformat() if values.get("timestamp") else None,
-                    "speed": number(values.get("enhanced_speed", values.get("speed")), 2),
-                    "altitude": number(values.get("enhanced_altitude", values.get("altitude")), 1),
-                    "distance_m": values.get("distance"),
-                })
+                point_count += 1
+                timestamp = values.get("timestamp")
+                timestamp = timestamp.replace(tzinfo=timezone.utc).isoformat() if timestamp else None
+                if first_point_time is None:
+                    first_point_time = timestamp
+                if include_track:
+                    records.append({
+                        "lat": round(lat, 6),
+                        "lon": round(lon, 6),
+                        "t": timestamp,
+                        "speed": number(values.get("enhanced_speed", values.get("speed")), 2),
+                        "altitude": number(values.get("enhanced_altitude", values.get("altitude")), 1),
+                        "distance_m": values.get("distance"),
+                    })
         elif message.name == "session":
-            session = values
+            session = {field.name: field.value for field in message if field.value is not None}
 
-    start = session.get("start_time") or (records[0].get("t") if records else None)
+    start = session.get("start_time") or first_point_time
     if isinstance(start, datetime):
         start = start.replace(tzinfo=timezone.utc).isoformat()
     elapsed = session.get("total_elapsed_time")
@@ -63,7 +73,7 @@ def parse_workout(path, include_track=False):
         "descent_m": number(session.get("total_descent"), 0),
         "calories": session.get("total_calories"),
         "temperature_c": number(session.get("avg_temperature"), 0),
-        "points": len(records),
+        "points": point_count,
     }
     if include_track:
         result["track"] = records
@@ -114,9 +124,21 @@ def workout_detail(workout_id):
     path = DATA / f"{workout_id}.fit"
     if not path.is_file() or path.parent != DATA:
         return jsonify({"error": "Workout not found"}), 404
-    result = parse_workout(path, include_track=True)
     weather_path = DATA / "weather_cache" / f"{workout_id}.json"
+    path_stat = path.stat()
+    weather_stat = weather_path.stat() if weather_path.is_file() else None
+    signature = (
+        path_stat.st_size,
+        path_stat.st_mtime_ns,
+        weather_stat.st_size if weather_stat else None,
+        weather_stat.st_mtime_ns if weather_stat else None,
+    )
+    cached = _detail_cache.get(workout_id)
+    if cached and cached[0] == signature:
+        return jsonify(cached[1])
+    result = parse_workout(path, include_track=True)
     result["weather"] = json.loads(weather_path.read_text()) if weather_path.is_file() else None
+    _detail_cache[workout_id] = (signature, result)
     return jsonify(result)
 
 
