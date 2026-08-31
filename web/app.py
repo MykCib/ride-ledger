@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -16,6 +16,12 @@ _workouts_signature = None
 _routes_cache = None
 _routes_signature = None
 _detail_cache = {}
+WORKOUTS_CACHE_VERSION = 2
+STOP_SPEED_MPS = 0.5
+MIN_STOP_SECONDS = 5
+DISTANCE_TOLERANCE_M = 1.0
+MAX_STOP_DISTANCE_M = 5.0
+RECORD_INTERVAL_SECONDS = 1
 
 
 def degrees(value):
@@ -26,21 +32,166 @@ def number(value, digits=1):
     return round(float(value), digits) if value is not None else None
 
 
+def as_utc(value):
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return value
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def timestamp_iso(value):
+    value = as_utc(value)
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
+def detect_stops(samples, session_start=None, elapsed_seconds=None):
+    """Infer stationary intervals from FIT records and recording pauses.
+
+    XOSS records are normally one second apart while moving, but automatic
+    pause removes records while stopped. Unchanged cumulative distance across a
+    timestamp gap is therefore a stronger signal than speed alone.
+    """
+    ordered = []
+    for sample in samples:
+        timestamp = as_utc(sample.get("timestamp"))
+        if isinstance(timestamp, datetime):
+            ordered.append({**sample, "timestamp": timestamp})
+    ordered.sort(key=lambda sample: sample["timestamp"])
+    if not ordered:
+        return []
+
+    candidates = []
+
+    def add_candidate(start, end):
+        if start and end and end > start:
+            candidates.append((start, end))
+
+    session_start = as_utc(session_start)
+    first = ordered[0]
+    last = ordered[-1]
+
+    if (
+        session_start
+        and first["timestamp"] > session_start
+        and first.get("speed") is not None
+        and first["speed"] <= STOP_SPEED_MPS
+    ):
+        add_candidate(session_start, first["timestamp"])
+
+    for previous, current in zip(ordered, ordered[1:]):
+        gap_seconds = (current["timestamp"] - previous["timestamp"]).total_seconds()
+        previous_distance = previous.get("distance_m")
+        current_distance = current.get("distance_m")
+        distance_delta = (
+            current_distance - previous_distance
+            if previous_distance is not None and current_distance is not None
+            else None
+        )
+        if (
+            gap_seconds > RECORD_INTERVAL_SECONDS
+            and distance_delta is not None
+            and abs(distance_delta) <= DISTANCE_TOLERANCE_M
+        ):
+            add_candidate(
+                previous["timestamp"] + timedelta(seconds=RECORD_INTERVAL_SECONDS),
+                current["timestamp"],
+            )
+
+    low_start = None
+    low_end = None
+    low_distance_start = None
+    low_distance_end = None
+    previous_timestamp = None
+
+    def flush_low_speed_run():
+        nonlocal low_start, low_end, low_distance_start, low_distance_end
+        if (
+            low_start
+            and low_end
+            and low_distance_start is not None
+            and low_distance_end is not None
+            and abs(low_distance_end - low_distance_start) <= MAX_STOP_DISTANCE_M
+        ):
+            add_candidate(low_start, low_end + timedelta(seconds=1))
+        low_start = None
+        low_end = None
+        low_distance_start = None
+        low_distance_end = None
+
+    for sample in ordered:
+        timestamp = sample["timestamp"]
+        speed = sample.get("speed")
+        is_contiguous = (
+            previous_timestamp is not None
+            and (timestamp - previous_timestamp).total_seconds() <= RECORD_INTERVAL_SECONDS + 1
+        )
+        if speed is not None and speed <= STOP_SPEED_MPS:
+            if low_start is None or not is_contiguous:
+                flush_low_speed_run()
+                low_start = timestamp
+                low_distance_start = sample.get("distance_m")
+            low_end = timestamp
+            low_distance_end = sample.get("distance_m")
+        else:
+            flush_low_speed_run()
+        previous_timestamp = timestamp
+    flush_low_speed_run()
+
+    if session_start and elapsed_seconds is not None:
+        session_end = session_start + timedelta(seconds=float(elapsed_seconds))
+        if (
+            session_end > last["timestamp"]
+            and last.get("speed") is not None
+            and last["speed"] <= STOP_SPEED_MPS
+        ):
+            add_candidate(last["timestamp"], session_end)
+
+    candidates.sort(key=lambda interval: interval[0])
+    merged = []
+    for start, end in candidates:
+        if merged and start <= merged[-1][1] + timedelta(seconds=1):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    stops = []
+    for start, end in merged:
+        duration = round((end - start).total_seconds())
+        if duration >= MIN_STOP_SECONDS:
+            stops.append({
+                "start": timestamp_iso(start),
+                "end": timestamp_iso(end),
+                "duration_seconds": duration,
+            })
+    return stops
+
+
 def parse_workout(path, include_track=False):
     fit = FitFile(str(path))
     records = []
+    samples = []
     point_count = 0
     first_point_time = None
     session = {}
     for message in fit.get_messages():
         if message.name == "record":
             values = {field.name: field.value for field in message if field.value is not None}
+            timestamp = as_utc(values.get("timestamp"))
+            speed = number(values.get("enhanced_speed", values.get("speed")), 2)
+            distance = values.get("distance")
+            if timestamp is not None:
+                samples.append({"timestamp": timestamp, "speed": speed, "distance_m": distance})
             lat = degrees(values.get("position_lat"))
             lon = degrees(values.get("position_long"))
             if lat is not None and lon is not None:
                 point_count += 1
-                timestamp = values.get("timestamp")
-                timestamp = timestamp.replace(tzinfo=timezone.utc).isoformat() if timestamp else None
+                timestamp = timestamp_iso(timestamp)
                 if first_point_time is None:
                     first_point_time = timestamp
                 if include_track:
@@ -48,18 +199,27 @@ def parse_workout(path, include_track=False):
                         "lat": round(lat, 6),
                         "lon": round(lon, 6),
                         "t": timestamp,
-                        "speed": number(values.get("enhanced_speed", values.get("speed")), 2),
+                        "speed": speed,
                         "altitude": number(values.get("enhanced_altitude", values.get("altitude")), 1),
-                        "distance_m": values.get("distance"),
+                        "distance_m": distance,
                     })
         elif message.name == "session":
             session = {field.name: field.value for field in message if field.value is not None}
 
-    start = session.get("start_time") or first_point_time
-    if isinstance(start, datetime):
-        start = start.replace(tzinfo=timezone.utc).isoformat()
+    session_start = as_utc(session.get("start_time"))
+    if session_start is None and first_point_time:
+        session_start = datetime.fromisoformat(first_point_time)
+    start = timestamp_iso(session_start)
     elapsed = session.get("total_elapsed_time")
     moving = session.get("total_moving_time")
+    stops = detect_stops(samples, session_start, elapsed)
+    detected_stopped = sum(stop["duration_seconds"] for stop in stops)
+    estimated_stopped = (
+        max(float(elapsed) - float(moving), 0)
+        if elapsed is not None and moving is not None
+        else detected_stopped or None
+    )
+    moving_percent = float(moving) / float(elapsed) * 100 if moving is not None and elapsed else None
     result = {
         "id": path.stem,
         "file": path.name,
@@ -74,9 +234,14 @@ def parse_workout(path, include_track=False):
         "calories": session.get("total_calories"),
         "temperature_c": number(session.get("avg_temperature"), 0),
         "points": point_count,
+        "estimated_stopped_seconds": number(estimated_stopped, 0),
+        "moving_percent": number(moving_percent, 1),
+        "stop_count": len(stops),
+        "longest_stop_seconds": max((stop["duration_seconds"] for stop in stops), default=0),
     }
     if include_track:
         result["track"] = records
+        result["stops"] = stops
     return result
 
 
@@ -90,7 +255,7 @@ def workouts():
     if cache_path.is_file():
         try:
             cached = json.loads(cache_path.read_text())
-            if tuple(tuple(item) for item in cached["signature"]) == signature:
+            if cached.get("version") == WORKOUTS_CACHE_VERSION and tuple(tuple(item) for item in cached["signature"]) == signature:
                 _workouts_signature = signature
                 _workouts_cache = cached["workouts"]
                 return _workouts_cache
@@ -104,7 +269,7 @@ def workouts():
             app.logger.warning("Skipping %s: %s", path.name, error)
     _workouts_signature = signature
     _workouts_cache = result
-    cache_path.write_text(json.dumps({"signature": signature, "workouts": result}))
+    cache_path.write_text(json.dumps({"version": WORKOUTS_CACHE_VERSION, "signature": signature, "workouts": result}))
     return result
 
 
@@ -121,6 +286,8 @@ def ride_page(workout_id):
 @app.get("/<path:frontend_path>")
 def frontend_route(frontend_path):
     if frontend_path in {"api", "static"} or frontend_path.startswith(("api/", "static/")):
+        return jsonify({"error": "Not found"}), 404
+    if "." in frontend_path.rsplit("/", 1)[-1]:
         return jsonify({"error": "Not found"}), 404
     return render_template("index.html")
 

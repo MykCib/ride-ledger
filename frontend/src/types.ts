@@ -12,6 +12,10 @@ export interface WorkoutSummary {
   calories: number | null;
   temperature_c: number | null;
   points: number;
+  estimated_stopped_seconds: number | null;
+  moving_percent: number | null;
+  stop_count: number;
+  longest_stop_seconds: number;
 }
 
 export interface TrackPoint {
@@ -30,9 +34,16 @@ export interface WeatherSummary {
   precipitation_mm: number | null;
 }
 
+export interface StopInterval {
+  start: string;
+  end: string;
+  duration_seconds: number;
+}
+
 export interface WorkoutDetail extends WorkoutSummary {
   track: TrackPoint[];
   weather: WeatherSummary | null;
+  stops: StopInterval[];
 }
 
 export type RouteCoordinate = [number, number];

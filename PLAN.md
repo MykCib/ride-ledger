@@ -7,7 +7,7 @@
 - Routes are shown individually and as a combined map.
 - Weather data is fetched from Open-Meteo and cached.
 - Weekly distance, speed charts, and map-linked hovering are implemented.
-- The dashboard currently contains 48 rides.
+- The dashboard count is derived dynamically from the downloaded FIT files.
 - Available data includes GPS, speed, altitude, distance, temperature, and timestamps.
 - Heart-rate and cadence values are currently zero and should not be used.
 

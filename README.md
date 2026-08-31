@@ -62,6 +62,12 @@ npm run dev
 
 The Vite development server proxies `/api` requests to Flask.
 
+Ride details include elapsed time, moving time, moving share, estimated stopped
+time, stop count, longest stop, and the detected stop intervals. Stopped time is
+the FIT session's elapsed time minus moving time; individual intervals are
+inferred from unchanged-distance timestamp gaps and sustained speeds at or
+below 0.5 m/s, with intervals shorter than five seconds ignored.
+
 Start the dashboard directly during development:
 
 ```sh

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getInsights, getRoutes, getWorkouts } from '../api';
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
-import { formatSpeed, formatTime, formatWorkoutTitle } from '../format';
+import { formatClock, formatDuration, formatSpeed, formatTime, formatWorkoutTitle } from '../format';
 import type { Insights, RouteOverlay, TrackPoint, WorkoutDetail, WorkoutSummary } from '../types';
 import { AllRoutesMap, RouteMap } from './Maps';
 import { SegmentChart, SpeedChart, WeeklyChart } from './Charts';
@@ -39,10 +39,12 @@ function Intro() {
 function Stats({ rides }: { rides: WorkoutSummary[] }) {
   const totalKm = rides.reduce((sum, ride) => sum + (ride.distance_km || 0), 0);
   const totalHours = rides.reduce((sum, ride) => sum + (ride.moving_seconds || 0), 0) / 3600;
+  const stoppedHours = rides.reduce((sum, ride) => sum + (ride.estimated_stopped_seconds || 0), 0) / 3600;
   const values: Array<[string, string | number]> = [
     ['RIDES', rides.length],
     ['DISTANCE', `${totalKm.toFixed(1)} km`],
     ['MOVING TIME', `${totalHours.toFixed(1)} h`],
+    ['STOPPED TIME', `${stoppedHours.toFixed(1)} h`],
     ['AVG RIDE', `${(totalKm / Math.max(rides.length, 1)).toFixed(1)} km`],
   ];
   return <section className="stats">{values.map(([label, value]) => <div className="stat" key={label}><div className="stat-label">{label}</div><div className="stat-value">{value}</div></div>)}</section>;
@@ -118,6 +120,11 @@ function RideList({ rides, selectedId }: { rides: WorkoutSummary[]; selectedId: 
 function DetailStats({ ride }: { ride: WorkoutDetail }) {
   const stats: Array<[string, string | number]> = [
     ['Moving time', formatTime(ride.moving_seconds)],
+    ['Elapsed time', formatTime(ride.elapsed_seconds)],
+    ['Estimated stopped', formatDuration(ride.estimated_stopped_seconds)],
+    ['Moving share', ride.moving_percent == null ? '—' : `${ride.moving_percent.toFixed(1)}%`],
+    ['Stops', ride.stop_count],
+    ['Longest stop', formatDuration(ride.longest_stop_seconds)],
     ['Average speed', formatSpeed(ride.average_speed_kmh)],
     ['Top speed', formatSpeed(ride.max_speed_kmh)],
     ['Ascent', `${ride.ascent_m ?? '—'} m`],
@@ -133,6 +140,29 @@ function DetailStats({ ride }: { ride: WorkoutDetail }) {
     );
   }
   return <div className="detail-grid">{stats.map(([label, value]) => <div className="detail-stat" key={label}><span className="detail-stat-label">{label}</span><b>{value}</b></div>)}</div>;
+}
+
+function StopList({ ride }: { ride: WorkoutDetail }) {
+  const stops = ride.stops ?? [];
+  return (
+    <section className="stop-panel">
+      <div className="section-head"><h2>Detected stops</h2><span>{ride.stop_count} PAUSES</span></div>
+      {stops.length ? (
+        <ol className="stop-list">
+          {stops.map((stop, index) => (
+            <li className="stop-row" key={`${stop.start}-${stop.end}`}>
+              <span className="stop-index">{String(index + 1).padStart(2, '0')}</span>
+              <span className="stop-time">{formatClock(stop.start)} – {formatClock(stop.end)}</span>
+              <b>{formatDuration(stop.duration_seconds)}</b>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="stop-empty">No stationary interval of at least five seconds was detected.</p>
+      )}
+      <p className="chart-note">Stopped time is estimated from the elapsed and moving session timers. Intervals are inferred from timestamp gaps and near-zero-speed samples.</p>
+    </section>
+  );
 }
 
 function DetailPanel({ selectedId, ride, loading, error }: { selectedId: string | undefined; ride: WorkoutDetail | null; loading: boolean; error: Error | null }) {
@@ -163,6 +193,7 @@ function DetailPanel({ selectedId, ride, loading, error }: { selectedId: string 
         <RouteMap track={ride.track} highlightedPoint={highlightedPoint} />
         <div className="speed-chart"><div className="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div className="chart-wrap"><SpeedChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
         <DetailStats ride={ride} />
+        <StopList ride={ride} />
         <p className="route-note">{ride.points.toLocaleString()} GPS points · {ride.temperature_c ?? '—'}°C computer temperature · {ride.weather ? 'Historical weather from Open-Meteo' : 'Weather data is being collected for this ride'} · {ride.file}</p>
       </div>
       {error && <p className="route-note">Could not load selected workout: {error.message}</p>}
@@ -209,25 +240,26 @@ export function DashboardPage() {
   const detailState = useWorkoutDetail(selectedId, refreshKey);
   const overviewVersion = useRef(-1);
   useEffect(() => {
-    if (!rides.length || !detailState.data || detailState.data.id !== selectedId || detailState.loading || overviewVersion.current === refreshKey) return;
+    if (!rides.length || overviewVersion.current === refreshKey) return;
     const controller = new AbortController();
     let active = true;
     setOverviewError(null);
-    Promise.all([getRoutes(controller.signal), getInsights(controller.signal)])
-      .then(([routeData, insightData]) => {
+    Promise.allSettled([getRoutes(controller.signal), getInsights(controller.signal)])
+      .then(([routeResult, insightResult]) => {
         if (!active) return;
         overviewVersion.current = refreshKey;
-        setRoutes(routeData.routes);
-        setInsights(insightData);
-      })
-      .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === 'AbortError')) setOverviewError(error instanceof Error ? error : new Error('Could not load overview data'));
+        const errors: string[] = [];
+        if (routeResult.status === 'fulfilled') setRoutes(routeResult.value.routes);
+        else errors.push(`Routes: ${routeResult.reason instanceof Error ? routeResult.reason.message : 'request failed'}`);
+        if (insightResult.status === 'fulfilled') setInsights(insightResult.value);
+        else errors.push(`Insights: ${insightResult.reason instanceof Error ? insightResult.reason.message : 'request failed'}`);
+        if (errors.length) setOverviewError(new Error(errors.join(' · ')));
       });
     return () => {
       active = false;
       controller.abort();
     };
-  }, [detailState.data, detailState.loading, refreshKey, rides.length, selectedId]);
+  }, [refreshKey, rides.length]);
 
   const handleRefresh = () => {
     if (loadingRides) return;

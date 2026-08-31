@@ -5,6 +5,22 @@ export function formatTime(seconds: number | null): string {
   return hours ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${minutes} min`;
 }
 
+export function formatDuration(seconds: number | null): string {
+  if (seconds == null) return '—';
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total % 3600 / 60);
+  const remainingSeconds = total % 60;
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m ${String(remainingSeconds).padStart(2, '0')}s`;
+  return `${remainingSeconds}s`;
+}
+
+export function formatClock(value: string | null): string {
+  if (!value) return '—';
+  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
 export function formatSpeed(value: number | null): string {
   return value == null ? '—' : `${value.toFixed(1)} km/h`;
 }
