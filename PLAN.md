@@ -18,6 +18,7 @@
 - Weather analysis compares speed against temperature and wind, dry versus wet rides, fastest-ride conditions, and route directions.
 - Activity patterns include timezone-aware weekday and departure-hour distributions plus a riding calendar heatmap.
 - Ride details support animated track playback with a position slider, live speed and altitude, and existing start/finish markers.
+- Each ride reports data-quality warnings for GPS gaps, invalid points, speed spikes, long stops, incomplete recordings, and suspicious distance values, with an original FIT download.
 - Available data includes GPS, speed, altitude, distance, temperature, and timestamps.
 - Heart-rate and cadence values are currently zero and should not be used.
 
@@ -87,14 +88,14 @@
 
 ## Phase 6: Data Quality
 
-- [ ] Detect GPS signal gaps.
-- [ ] Detect invalid GPS points.
-- [ ] Detect unrealistic speed spikes.
-- [ ] Detect unusually long stops.
-- [ ] Detect incomplete recordings.
-- [ ] Detect suspicious distance values.
-- [ ] Show a data-quality warning per workout.
-- [ ] Add a raw FIT-file download link.
+- [x] Detect GPS signal gaps.
+- [x] Detect invalid GPS points.
+- [x] Detect unrealistic speed spikes.
+- [x] Detect unusually long stops.
+- [x] Detect incomplete recordings.
+- [x] Detect suspicious distance values.
+- [x] Show a data-quality warning per workout.
+- [x] Add a raw FIT-file download link.
 - [x] Preserve the original FIT files unchanged.
 
 ## Phase 7: Dashboard Improvements
@@ -121,7 +122,7 @@
 6. [x] Weather-versus-performance analysis.
 7. [x] Calendar and weekday analysis.
 8. [x] Animated route playback.
-9. [ ] Data-quality checks.
+9. [x] Data-quality checks.
 10. [ ] Advanced map layers and filters.
 
 ## Data Limitations
@@ -130,5 +131,6 @@
 - Cadence data is unavailable or zero in the current files.
 - Historical weather is estimated from route locations and hourly weather records.
 - Wind direction is not currently cached, so headwind and tailwind analysis remains pending.
+- Timestamp gaps covered by inferred stops are excluded from GPS-gap warnings.
 - Older rides are not currently stored on the XOSS device.
 - Segment detection will be more reliable after more rides are collected.

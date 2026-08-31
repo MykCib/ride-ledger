@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from web.app import COMMUTES_CACHE_VERSION, INSIGHTS_CACHE_VERSION, WORKOUTS_CACHE_VERSION, build_commute_analysis, build_route_segments, build_weather_analysis, build_workout_insights, route_performance, vertical_rate
+from web.app import COMMUTES_CACHE_VERSION, INSIGHTS_CACHE_VERSION, WORKOUTS_CACHE_VERSION, app, build_commute_analysis, build_data_quality, build_route_segments, build_weather_analysis, build_workout_insights, route_performance, vertical_rate
 
 
 def ride(ride_id, date, distance=5.0, speed=20.0):
@@ -138,7 +138,7 @@ class RouteAnalysisTests(unittest.TestCase):
 
     def test_commute_cache_version_matches_current_metric_schema(self):
         self.assertEqual(COMMUTES_CACHE_VERSION, 4)
-        self.assertEqual(WORKOUTS_CACHE_VERSION, 4)
+        self.assertEqual(WORKOUTS_CACHE_VERSION, 5)
         self.assertEqual(INSIGHTS_CACHE_VERSION, 2)
 
     def test_vertical_rate_uses_moving_time(self):
@@ -146,6 +146,65 @@ class RouteAnalysisTests(unittest.TestCase):
         self.assertEqual(vertical_rate(0, 1800), 0.0)
         self.assertIsNone(vertical_rate(100, 0))
         self.assertIsNone(vertical_rate("invalid", 1800))
+
+    def test_data_quality_ignores_gaps_covered_by_detected_stops(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        samples = [
+            {"timestamp": start, "speed": 0.1, "distance_m": 0},
+            {"timestamp": start + timedelta(seconds=12), "speed": 0.1, "distance_m": 0},
+        ]
+        result = build_data_quality(
+            samples,
+            2,
+            {"start_time": start, "total_elapsed_time": 12, "total_moving_time": 0, "total_distance": 0},
+            start,
+            12,
+            0,
+            [{"start": start.isoformat(), "end": (start + timedelta(seconds=12)).isoformat(), "duration_seconds": 12}],
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["warnings"], [])
+
+    def test_data_quality_reports_bad_points_and_metrics(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        samples = [
+            {"timestamp": start, "speed": 4, "distance_m": 0, "lat": 54.7, "lon": 25.2, "coordinate_present": True},
+            {"timestamp": start + timedelta(seconds=1), "speed": 40, "distance_m": 100, "lat": 54.701, "lon": 25.2, "coordinate_present": True},
+            {"timestamp": start + timedelta(seconds=12), "speed": 4, "distance_m": 200, "lat": 54.702, "lon": 25.2, "coordinate_present": True},
+            {"timestamp": start + timedelta(seconds=13), "speed": -1, "distance_m": -1, "lat": 95, "lon": 25.2, "coordinate_present": True},
+            {"timestamp": start + timedelta(seconds=14), "speed": 4, "distance_m": 80, "lat": 54.704, "lon": 25.2, "coordinate_present": True},
+        ]
+        result = build_data_quality(
+            samples,
+            4,
+            {"start_time": start, "total_elapsed_time": 20, "total_moving_time": 25, "total_distance": 1000},
+            start,
+            20,
+            25,
+            [{"start": (start + timedelta(seconds=30)).isoformat(), "end": (start + timedelta(seconds=931)).isoformat(), "duration_seconds": 901}],
+        )
+
+        codes = {warning["code"] for warning in result["warnings"]}
+        self.assertEqual(result["status"], "warning")
+        self.assertEqual(codes, {"invalid_gps", "gps_gap", "speed_spike", "long_stop", "suspicious_distance", "incomplete_recording"})
+
+    def test_original_fit_download_is_limited_to_data_directory(self):
+        with TemporaryDirectory() as directory:
+            data = Path(directory)
+            (data / "ride.fit").write_bytes(b"original fit bytes")
+            with patch("web.app.DATA", data):
+                with app.test_client() as client:
+                    response = client.get("/api/workouts/ride/download")
+                    missing = client.get("/api/workouts/missing/download")
+                    traversal = client.get("/api/workouts/../ride/download")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, b"original fit bytes")
+        self.assertIn("attachment", response.headers["Content-Disposition"])
+        response.close()
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(traversal.status_code, 404)
 
     def test_weather_analysis_compares_conditions_and_route_directions(self):
         items = [

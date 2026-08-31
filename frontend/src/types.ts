@@ -1,3 +1,15 @@
+export interface DataQualityWarning {
+  code: string;
+  count: number;
+  message: string;
+}
+
+export interface WorkoutDataQuality {
+  status: 'ok' | 'warning';
+  warning_count: number;
+  warnings: DataQualityWarning[];
+}
+
 export interface WorkoutSummary {
   id: string;
   file: string;
@@ -18,6 +30,7 @@ export interface WorkoutSummary {
   moving_percent: number | null;
   stop_count: number;
   longest_stop_seconds: number;
+  data_quality: WorkoutDataQuality;
 }
 
 export interface TrackPoint {

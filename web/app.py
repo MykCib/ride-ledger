@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import Lock
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from fitparse import FitFile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,7 +29,7 @@ _weather_analysis_cache = None
 _weather_analysis_signature = None
 _detail_cache = {}
 _routes_lock = Lock()
-WORKOUTS_CACHE_VERSION = 4
+WORKOUTS_CACHE_VERSION = 5
 COMMUTES_CACHE_VERSION = 4
 SEGMENTS_CACHE_VERSION = 2
 WEATHER_ANALYSIS_CACHE_VERSION = 1
@@ -44,9 +44,15 @@ RECORD_INTERVAL_SECONDS = 1
 ENDPOINT_CLUSTER_RADIUS_M = 500
 DAY_SECONDS = 24 * 60 * 60
 ROUTE_SEGMENT_COUNT = 10
+GPS_GAP_SECONDS = 5
+LONG_STOP_SECONDS = 15 * 60
+MAX_REASONABLE_SPEED_KMH = 120
+DISTANCE_MISMATCH_METERS = 500
+DISTANCE_MISMATCH_RATIO = 0.20
 
 
 def degrees(value):
+    value = finite_number(value) if value is not None else None
     return value * 180.0 / 2**31 if value is not None else None
 
 
@@ -807,6 +813,218 @@ def detect_stops(samples, session_start=None, elapsed_seconds=None):
     return stops
 
 
+def valid_coordinate(latitude, longitude):
+    latitude = finite_number(latitude)
+    longitude = finite_number(longitude)
+    return (
+        latitude is not None
+        and longitude is not None
+        and -90 <= latitude <= 90
+        and -180 <= longitude <= 180
+    )
+
+
+def quality_duration(seconds):
+    seconds = max(0, round(seconds))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def build_data_quality(samples, point_count, session, session_start, elapsed_seconds, moving_seconds, stops):
+    warnings = []
+
+    def add_warning(code, count, message):
+        if count:
+            warnings.append({"code": code, "count": count, "message": message})
+
+    invalid_coordinates = sum(
+        1
+        for sample in samples
+        if sample.get("coordinate_present")
+        and not valid_coordinate(sample.get("lat"), sample.get("lon"))
+    )
+    add_warning(
+        "invalid_gps",
+        invalid_coordinates,
+        f"{invalid_coordinates} invalid GPS point{'s' if invalid_coordinates != 1 else ''}.",
+    )
+
+    timestamp_sequence = [
+        sample["timestamp"]
+        for sample in samples
+        if isinstance(sample.get("timestamp"), datetime)
+    ]
+    timestamp_order_issues = sum(
+        1
+        for previous, current in zip(timestamp_sequence, timestamp_sequence[1:])
+        if current < previous
+    )
+    add_warning(
+        "timestamp_order",
+        timestamp_order_issues,
+        f"{timestamp_order_issues} timestamp order issue{'s' if timestamp_order_issues != 1 else ''} "
+        "in the original record sequence.",
+    )
+
+    ordered = sorted(
+        (sample for sample in samples if isinstance(sample.get("timestamp"), datetime)),
+        key=lambda sample: sample["timestamp"],
+    )
+    stop_ranges = []
+    for stop in stops:
+        stop_start = as_utc(stop.get("start"))
+        stop_end = as_utc(stop.get("end"))
+        if isinstance(stop_start, datetime) and isinstance(stop_end, datetime) and stop_end > stop_start:
+            stop_ranges.append((stop_start, stop_end))
+
+    gps_gaps = []
+    for previous, current in zip(ordered, ordered[1:]):
+        gap = (current["timestamp"] - previous["timestamp"]).total_seconds()
+        if gap <= GPS_GAP_SECONDS:
+            continue
+        if any(
+            previous["timestamp"] < stop_end and current["timestamp"] > stop_start
+            for stop_start, stop_end in stop_ranges
+        ):
+            continue
+        previous_distance = finite_number(previous.get("distance_m"))
+        current_distance = finite_number(current.get("distance_m"))
+        distance_progressed = (
+            previous_distance is not None
+            and current_distance is not None
+            and current_distance - previous_distance > DISTANCE_TOLERANCE_M
+        )
+        missing_distance_while_moving = (
+            previous_distance is None
+            and current_distance is None
+            and max(
+                finite_number(previous.get("speed")) or 0,
+                finite_number(current.get("speed")) or 0,
+            ) > STOP_SPEED_MPS * 4
+        )
+        if distance_progressed or missing_distance_while_moving:
+            gps_gaps.append(gap)
+    longest_gap = max(gps_gaps, default=0)
+    add_warning(
+        "gps_gap",
+        len(gps_gaps),
+        f"{len(gps_gaps)} GPS gap{'s' if len(gps_gaps) != 1 else ''} while moving "
+        f"over {GPS_GAP_SECONDS} seconds (longest {quality_duration(longest_gap)}).",
+    )
+
+    speed_spikes = []
+    for sample in samples:
+        speed = finite_number(sample.get("speed"))
+        if speed is not None and (speed < 0 or speed * 3.6 > MAX_REASONABLE_SPEED_KMH):
+            speed_spikes.append(speed * 3.6)
+    maximum_speed = max(speed_spikes, default=0)
+    add_warning(
+        "speed_spike",
+        len(speed_spikes),
+        f"{len(speed_spikes)} unrealistic speed spike{'s' if len(speed_spikes) != 1 else ''} "
+        f"above {MAX_REASONABLE_SPEED_KMH} km/h (maximum {number(maximum_speed, 1)} km/h).",
+    )
+
+    long_stops = [
+        duration
+        for stop in stops
+        if (duration := finite_number(stop.get("duration_seconds"))) is not None
+        and duration > LONG_STOP_SECONDS
+    ]
+    longest_stop = max(long_stops, default=0)
+    add_warning(
+        "long_stop",
+        len(long_stops),
+        f"{len(long_stops)} unusually long stop{'s' if len(long_stops) != 1 else ''} "
+        f"over {quality_duration(LONG_STOP_SECONDS)} (longest {quality_duration(longest_stop)}).",
+    )
+
+    distance_values = []
+    invalid_distances = 0
+    for sample in samples:
+        raw_distance = sample.get("distance_m")
+        if raw_distance is None:
+            continue
+        distance = finite_number(raw_distance)
+        if distance is None or distance < 0:
+            invalid_distances += 1
+        else:
+            distance_values.append(distance)
+    distance_drops = sum(
+        1
+        for previous, current in zip(distance_values, distance_values[1:])
+        if current < previous - DISTANCE_TOLERANCE_M
+    )
+    distance_messages = []
+    distance_events = invalid_distances + distance_drops
+    if invalid_distances:
+        distance_messages.append(f"{invalid_distances} invalid readings")
+    if distance_drops:
+        distance_messages.append(f"{distance_drops} cumulative-distance drops")
+    raw_session_distance = session.get("total_distance")
+    session_distance = finite_number(session.get("total_distance"))
+    if raw_session_distance is not None and (session_distance is None or session_distance < 0):
+        distance_events += 1
+        distance_messages.append("invalid session total")
+    track_distance = (
+        distance_values[-1] - distance_values[0]
+        if len(distance_values) >= 2
+        else None
+    )
+    if track_distance is not None and track_distance < -DISTANCE_TOLERANCE_M:
+        distance_events += 1
+        distance_messages.append(f"negative first-to-last progress of {number(track_distance, 0)} m")
+    if session_distance is not None and track_distance is not None and track_distance >= 0:
+        mismatch = abs(session_distance - track_distance)
+        if mismatch > max(DISTANCE_MISMATCH_METERS, abs(session_distance) * DISTANCE_MISMATCH_RATIO):
+            distance_events += 1
+            distance_messages.append(
+                f"session/track mismatch of {number(mismatch, 0)} m"
+            )
+    if distance_events:
+        add_warning("suspicious_distance", distance_events, f"Suspicious distance data: {', '.join(distance_messages)}.")
+
+    incomplete_reasons = []
+    if not session:
+        incomplete_reasons.append("missing session summary")
+    else:
+        if session_start is None or as_utc(session.get("start_time")) is None:
+            incomplete_reasons.append("missing start time")
+        if elapsed_seconds is None or elapsed_seconds <= 0:
+            incomplete_reasons.append("missing elapsed time")
+        if moving_seconds is None or moving_seconds < 0:
+            incomplete_reasons.append("missing moving time")
+        elif elapsed_seconds is not None and moving_seconds > elapsed_seconds:
+            incomplete_reasons.append("moving time exceeds elapsed time")
+    if point_count < 2:
+        incomplete_reasons.append("fewer than two valid GPS points")
+    timestamped = [sample["timestamp"] for sample in ordered]
+    if not timestamped:
+        incomplete_reasons.append("no timestamped records")
+    elif session_start is not None and elapsed_seconds is not None and elapsed_seconds > 0:
+        span = (timestamped[-1] - timestamped[0]).total_seconds()
+        if span < elapsed_seconds * 0.5:
+            incomplete_reasons.append("recorded span is much shorter than elapsed time")
+        session_end = session_start + timedelta(seconds=elapsed_seconds)
+        if (timestamped[0] - session_start).total_seconds() > 5 * 60:
+            incomplete_reasons.append("recording starts late")
+        if (session_end - timestamped[-1]).total_seconds() > 5 * 60:
+            incomplete_reasons.append("recording ends early")
+    if incomplete_reasons:
+        add_warning("incomplete_recording", 1, f"Incomplete recording: {', '.join(incomplete_reasons)}.")
+
+    return {
+        "status": "warning" if warnings else "ok",
+        "warning_count": len(warnings),
+        "warnings": warnings,
+    }
+
+
 def parse_workout(path, include_track=False):
     fit = FitFile(str(path))
     records = []
@@ -818,24 +1036,34 @@ def parse_workout(path, include_track=False):
         if message.name == "record":
             values = {field.name: field.value for field in message if field.value is not None}
             timestamp = as_utc(values.get("timestamp"))
-            speed = number(values.get("enhanced_speed", values.get("speed")), 2)
+            speed_value = finite_number(values.get("enhanced_speed", values.get("speed")))
+            speed = number(speed_value, 2)
             distance = values.get("distance")
-            if timestamp is not None:
-                samples.append({"timestamp": timestamp, "speed": speed, "distance_m": distance})
             lat = degrees(values.get("position_lat"))
             lon = degrees(values.get("position_long"))
-            if lat is not None and lon is not None:
+            samples.append({
+                "timestamp": timestamp,
+                "speed": speed,
+                "distance_m": distance,
+                "lat": lat,
+                "lon": lon,
+                "coordinate_present": values.get("position_lat") is not None or values.get("position_long") is not None,
+            })
+            if valid_coordinate(lat, lon):
                 point_count += 1
-                timestamp = timestamp_iso(timestamp)
-                if first_point_time is None:
-                    first_point_time = timestamp
+                point_timestamp = timestamp_iso(timestamp)
+                if first_point_time is None and point_timestamp:
+                    first_point_time = point_timestamp
                 if include_track:
                     records.append({
                         "lat": round(lat, 6),
                         "lon": round(lon, 6),
-                        "t": timestamp,
+                        "t": point_timestamp,
                         "speed": speed,
-                        "altitude": number(values.get("enhanced_altitude", values.get("altitude")), 1),
+                        "altitude": number(
+                            finite_number(values.get("enhanced_altitude", values.get("altitude"))),
+                            1,
+                        ),
                         "distance_m": distance,
                     })
         elif message.name == "session":
@@ -845,36 +1073,48 @@ def parse_workout(path, include_track=False):
     if session_start is None and first_point_time:
         session_start = datetime.fromisoformat(first_point_time)
     start = timestamp_iso(session_start)
-    elapsed = session.get("total_elapsed_time")
-    moving = session.get("total_moving_time")
+    elapsed = finite_number(session.get("total_elapsed_time"))
+    moving = finite_number(session.get("total_moving_time"))
     stops = detect_stops(samples, session_start, elapsed)
     detected_stopped = sum(stop["duration_seconds"] for stop in stops)
     estimated_stopped = (
         max(float(elapsed) - float(moving), 0)
-        if elapsed is not None and moving is not None
+        if elapsed is not None and elapsed >= 0 and moving is not None and moving >= 0
         else detected_stopped or None
     )
-    moving_percent = float(moving) / float(elapsed) * 100 if moving is not None and elapsed else None
+    moving_percent = (
+        float(moving) / float(elapsed) * 100
+        if moving is not None and moving >= 0 and elapsed is not None and elapsed > 0
+        else None
+    )
+    quality = build_data_quality(samples, point_count, session, session_start, elapsed, moving, stops)
+    total_distance = finite_number(session.get("total_distance"))
+    average_speed = finite_number(session.get("enhanced_avg_speed", session.get("avg_speed")))
+    max_speed = finite_number(session.get("enhanced_max_speed", session.get("max_speed")))
+    ascent = finite_number(session.get("total_ascent"))
+    descent = finite_number(session.get("total_descent"))
+    temperature = finite_number(session.get("avg_temperature"))
     result = {
         "id": path.stem,
         "file": path.name,
         "date": start,
-        "distance_km": number(session.get("total_distance") / 1000 if session.get("total_distance") is not None else None, 2),
+        "distance_km": number(total_distance / 1000 if total_distance is not None else None, 2),
         "moving_seconds": number(moving, 0),
         "elapsed_seconds": number(elapsed, 0),
-        "average_speed_kmh": number(session.get("enhanced_avg_speed", session.get("avg_speed")) * 3.6 if session.get("enhanced_avg_speed", session.get("avg_speed")) is not None else None, 1),
-        "max_speed_kmh": number(session.get("enhanced_max_speed", session.get("max_speed")) * 3.6 if session.get("enhanced_max_speed", session.get("max_speed")) is not None else None, 1),
-        "ascent_m": number(session.get("total_ascent"), 0),
-        "descent_m": number(session.get("total_descent"), 0),
-        "climbing_rate_m_per_hour": vertical_rate(session.get("total_ascent"), moving),
-        "descent_rate_m_per_hour": vertical_rate(session.get("total_descent"), moving),
+        "average_speed_kmh": number(average_speed * 3.6 if average_speed is not None else None, 1),
+        "max_speed_kmh": number(max_speed * 3.6 if max_speed is not None else None, 1),
+        "ascent_m": number(ascent, 0),
+        "descent_m": number(descent, 0),
+        "climbing_rate_m_per_hour": vertical_rate(ascent, moving),
+        "descent_rate_m_per_hour": vertical_rate(descent, moving),
         "calories": session.get("total_calories"),
-        "temperature_c": number(session.get("avg_temperature"), 0),
+        "temperature_c": number(temperature, 0),
         "points": point_count,
         "estimated_stopped_seconds": number(estimated_stopped, 0),
         "moving_percent": number(moving_percent, 1),
         "stop_count": len(stops),
         "longest_stop_seconds": max((stop["duration_seconds"] for stop in stops), default=0),
+        "data_quality": quality,
     }
     if include_track:
         result["track"] = records
@@ -935,10 +1175,24 @@ def workout_list():
     return jsonify({"workouts": items, "count": len(items), "updated": datetime.now(timezone.utc).isoformat()})
 
 
+@app.get("/api/workouts/<workout_id>/download")
+def workout_download(workout_id):
+    path = (DATA / f"{workout_id}.fit").resolve()
+    data_root = DATA.resolve()
+    if path.parent != data_root or not path.is_file():
+        return jsonify({"error": "Workout not found"}), 404
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name=path.name,
+        mimetype="application/octet-stream",
+    )
+
+
 @app.get("/api/workouts/<workout_id>")
 def workout_detail(workout_id):
-    path = DATA / f"{workout_id}.fit"
-    if not path.is_file() or path.parent != DATA:
+    path = (DATA / f"{workout_id}.fit").resolve()
+    if not path.is_file() or path.parent != DATA.resolve():
         return jsonify({"error": "Workout not found"}), 404
     weather_path = DATA / "weather_cache" / f"{workout_id}.json"
     path_stat = path.stat()

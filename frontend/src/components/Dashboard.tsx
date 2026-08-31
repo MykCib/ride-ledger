@@ -113,7 +113,7 @@ function RideList({ rides, selectedId, assignments }: { rides: WorkoutSummary[];
               }}
             >
               <div className="ride-date"><strong>{date ? String(date.getDate()).padStart(2, '0') : '—'}</strong>{date ? date.toLocaleDateString(undefined, { month: 'short' }).toUpperCase() : ''}</div>
-              <div><div className="ride-title">{formatWorkoutTitle(ride.date)}</div><div className="ride-sub">{formatTime(ride.moving_seconds)}{assignment && <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>}</div></div>
+              <div><div className="ride-title">{formatWorkoutTitle(ride.date)}</div><div className="ride-sub">{formatTime(ride.moving_seconds)}{assignment && <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>}{ride.data_quality?.status === 'warning' && <span className="quality-badge">{ride.data_quality.warning_count} QUALITY</span>}</div></div>
               <div className="ride-distance">{(ride.distance_km || 0).toFixed(1)}<small> km</small></div>
             </Link>
           );
@@ -169,6 +169,21 @@ function StopList({ ride }: { ride: WorkoutDetail }) {
         <p className="stop-empty">No stationary interval of at least five seconds was detected.</p>
       )}
       <p className="chart-note">Stopped time is estimated from the elapsed and moving session timers. Intervals are inferred from timestamp gaps and near-zero-speed samples.</p>
+    </section>
+  );
+}
+
+function QualityPanel({ ride }: { ride: WorkoutDetail }) {
+  const quality = ride.data_quality;
+  return (
+    <section className={`quality-panel ${quality.status}`}>
+      <div className="section-head"><h2>Data quality</h2><span>{quality.status === 'ok' ? 'OK' : `${quality.warning_count} CHECK${quality.warning_count === 1 ? '' : 'S'}`}</span></div>
+      {quality.warnings.length ? (
+        <ul className="quality-list">
+          {quality.warnings.map((warning) => <li key={warning.code}><span className="quality-code">{warning.code.replaceAll('_', ' ')}</span><span>{warning.message}</span></li>)}
+        </ul>
+      ) : <p className="quality-empty">No suspicious gaps, coordinates, speeds, stops, timing, or distance values were detected.</p>}
+      <a className="download-link" href={`/api/workouts/${encodeURIComponent(ride.id)}/download`} download={ride.file}>Download original FIT</a>
     </section>
   );
 }
@@ -272,8 +287,9 @@ function DetailPanel({ selectedId, ride, loading, error, assignment }: { selecte
          <div className="speed-chart"><div className="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div className="chart-wrap"><SpeedChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
          <div className="elevation-chart"><div className="section-head"><h2>Elevation profile</h2><span>METRES · ROUTE PROGRESS</span></div><div className="chart-wrap"><ElevationChart track={ride.track} /></div></div>
          <DetailStats ride={ride} />
-        <StopList ride={ride} />
-        <p className="route-note">{ride.points.toLocaleString()} GPS points · {ride.temperature_c ?? '—'}°C computer temperature · {ride.weather ? 'Historical weather from Open-Meteo' : 'Weather data is being collected for this ride'} · {ride.file}</p>
+         <StopList ride={ride} />
+         <QualityPanel ride={ride} />
+         <p className="route-note">{ride.points.toLocaleString()} GPS points · {ride.temperature_c ?? '—'}°C computer temperature · {ride.weather ? 'Historical weather from Open-Meteo' : 'Weather data is being collected for this ride'} · {ride.file}</p>
       </div>
       {error && <p className="route-note">Could not load selected workout: {error.message}</p>}
     </aside>
