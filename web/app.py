@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 import json
 from math import atan2, cos, floor, isfinite, radians, sin, sqrt
 import os
@@ -34,7 +34,7 @@ WORKOUTS_CACHE_VERSION = 5
 COMMUTES_CACHE_VERSION = 4
 SEGMENTS_CACHE_VERSION = 2
 WEATHER_ANALYSIS_CACHE_VERSION = 1
-INSIGHTS_CACHE_VERSION = 3
+INSIGHTS_CACHE_VERSION = 4
 LOCATION_NAMES_PATH = DATA / "location_names.json"
 DEFAULT_ANALYTICS_TIMEZONE = "Europe/Vilnius"
 STOP_SPEED_MPS = 0.5
@@ -448,6 +448,7 @@ def track_progress(track):
                 "point": [latitude, longitude],
                 "distance": distance if distance is not None and isfinite(distance) else None,
                 "timestamp": timestamp if isinstance(timestamp, datetime) else None,
+                "speed": finite_number(point.get("speed")),
             })
     points = [record["point"] for record in records]
     if len(points) < 2:
@@ -464,7 +465,12 @@ def track_progress(track):
         for previous, current in zip(points, points[1:]):
             cumulative.append(cumulative[-1] + distance_meters(previous, current))
     return [
-        {"point": record["point"], "distance": distance, "timestamp": record["timestamp"]}
+        {
+            "point": record["point"],
+            "distance": distance,
+            "timestamp": record["timestamp"],
+            "speed": record.get("speed"),
+        }
         for record, distance in zip(records, cumulative)
     ], cumulative[-1]
 
@@ -494,21 +500,77 @@ def interpolate_track_sample(progress, target):
     return {"point": progress[-1]["point"], "timestamp": progress[-1]["timestamp"]}
 
 
-def timestamp_at_distance(progress, distances, target):
-    index = bisect_left(distances, target)
+def timestamp_at_distance(progress, distances, target, prefer_last=False):
+    if prefer_last:
+        index = bisect_right(distances, target)
+        if index > 0 and distances[index - 1] == target:
+            return progress[index - 1]["timestamp"]
+    else:
+        index = bisect_left(distances, target)
+        if index < len(progress) and distances[index] == target:
+            return progress[index]["timestamp"]
     if index <= 0:
         return progress[0]["timestamp"]
     if index >= len(progress):
         return progress[-1]["timestamp"]
     current = progress[index]
     previous = progress[index - 1]
-    if target == current["distance"]:
-        return current["timestamp"]
     span = current["distance"] - previous["distance"]
     if not span or previous["timestamp"] is None or current["timestamp"] is None:
         return current["timestamp"]
     ratio = (target - previous["distance"]) / span
     return previous["timestamp"] + (current["timestamp"] - previous["timestamp"]) * ratio
+
+
+def section_quality_index(progress):
+    invalid_points = []
+    invalid_ranges = []
+    for sample in progress:
+        speed = finite_number(sample.get("speed"))
+        if speed is not None and (speed < 0 or speed * 3.6 > MAX_REASONABLE_SPEED_KMH):
+            invalid_points.append(sample["distance"])
+        if sample["timestamp"] is None:
+            invalid_points.append(sample["distance"])
+
+    for previous, current in zip(progress, progress[1:]):
+        previous_distance = previous["distance"]
+        current_distance = current["distance"]
+        previous_time = previous["timestamp"]
+        current_time = current["timestamp"]
+        invalid = previous_time is None or current_time is None or current_time <= previous_time
+        if invalid:
+            if previous_distance == current_distance:
+                invalid_points.append(current_distance)
+            else:
+                invalid_ranges.append((previous_distance, current_distance))
+            continue
+        gap_seconds = (current_time - previous_time).total_seconds()
+        distance_delta = current_distance - previous_distance
+        if gap_seconds > GPS_GAP_SECONDS and distance_delta > DISTANCE_TOLERANCE_M:
+            invalid_ranges.append((previous_distance, current_distance))
+        elif gap_seconds and distance_delta / gap_seconds * 3.6 > MAX_REASONABLE_SPEED_KMH:
+            invalid_ranges.append((previous_distance, current_distance))
+
+    invalid_ranges.sort()
+    range_starts = [start for start, _ in invalid_ranges]
+    range_max_ends = []
+    maximum_end = None
+    for _, end in invalid_ranges:
+        maximum_end = end if maximum_end is None else max(maximum_end, end)
+        range_max_ends.append(maximum_end)
+    return {
+        "points": sorted(invalid_points),
+        "range_starts": range_starts,
+        "range_max_ends": range_max_ends,
+    }
+
+
+def section_contains_invalid_data(quality, start_distance, end_distance):
+    range_count = bisect_left(quality["range_starts"], end_distance)
+    if range_count and quality["range_max_ends"][range_count - 1] > start_distance:
+        return True
+    point_index = bisect_left(quality["points"], start_distance)
+    return point_index < len(quality["points"]) and quality["points"][point_index] <= end_distance
 
 
 def fastest_section_from_progress(progress, total_distance, target_distance):
@@ -525,10 +587,13 @@ def fastest_section_from_progress(progress, total_distance, target_distance):
         for distance in distances
         if 0 <= distance - target_distance <= total_distance - target_distance
     )
+    quality = section_quality_index(progress)
     fastest = None
     for start_distance in sorted(candidate_distances):
-        start_time = timestamp_at_distance(progress, distances, start_distance)
         end_distance = start_distance + target_distance
+        if section_contains_invalid_data(quality, start_distance, end_distance):
+            continue
+        start_time = timestamp_at_distance(progress, distances, start_distance, prefer_last=True)
         if start_time is None:
             continue
         end_time = timestamp_at_distance(progress, distances, end_distance)
@@ -546,17 +611,20 @@ def fastest_section_from_progress(progress, total_distance, target_distance):
             }
     if fastest is None:
         return None
-    return {
-        "time_seconds": number(fastest["time_seconds"], 1),
-        "speed_kmh": number(fastest["speed_kmh"], 1),
-        "start_km": number(fastest["start_km"], 2),
-        "end_km": number(fastest["end_km"], 2),
-    }
+    return fastest
 
 
 def fastest_distance_section(track, target_distance):
     progress, total_distance = track_progress(track)
-    return fastest_section_from_progress(progress, total_distance, target_distance)
+    section = fastest_section_from_progress(progress, total_distance, target_distance)
+    if section is None:
+        return None
+    return {
+        "time_seconds": number(section["time_seconds"], 1),
+        "speed_kmh": number(section["speed_kmh"], 1),
+        "start_km": number(section["start_km"], 2),
+        "end_km": number(section["end_km"], 2),
+    }
 
 
 def resample_route(track, segment_count=ROUTE_SEGMENT_COUNT):
@@ -1513,6 +1581,28 @@ def speed_distribution(buckets):
     return result
 
 
+def fastest_section_payload(target_distance, section):
+    if section is None:
+        return {
+            "distance_km": target_distance // 1000,
+            "time_seconds": None,
+            "speed_kmh": None,
+            "start_km": None,
+            "end_km": None,
+            "ride_id": None,
+            "date": None,
+        }
+    return {
+        "distance_km": target_distance // 1000,
+        "time_seconds": number(section["time_seconds"], 1),
+        "speed_kmh": number(section["speed_kmh"], 1),
+        "start_km": number(section["start_km"], 2),
+        "end_km": number(section["end_km"], 2),
+        "ride_id": section["ride_id"],
+        "date": section["date"],
+    }
+
+
 def build_workout_insights(items):
     timezone_name, timezone_value = analytics_timezone()
     bins = [[] for _ in range(10)]
@@ -1541,9 +1631,12 @@ def build_workout_insights(items):
                 if section is None:
                     continue
                 current = fastest_sections[target_distance]
-                if current is None or section["time_seconds"] < current["time_seconds"]:
+                section_key = (str(item["id"]), section["start_km"])
+                current_key = (str(current["ride_id"]), current["start_km"]) if current else None
+                if current is None or section["time_seconds"] < current["time_seconds"] or (
+                    section["time_seconds"] == current["time_seconds"] and section_key < current_key
+                ):
                     fastest_sections[target_distance] = {
-                        "distance_km": target_distance // 1000,
                         **section,
                         "ride_id": item["id"],
                         "date": item.get("date"),
@@ -1578,18 +1671,7 @@ def build_workout_insights(items):
         ],
         "fastest": max(speed_items, key=lambda item: finite_number(item["average_speed_kmh"]), default=None),
         "longest": max(distance_items, key=lambda item: finite_number(item["distance_km"]), default=None),
-        "fastest_sections": [
-            fastest_sections[target] or {
-                "distance_km": target // 1000,
-                "time_seconds": None,
-                "speed_kmh": None,
-                "start_km": None,
-                "end_km": None,
-                "ride_id": None,
-                "date": None,
-            }
-            for target in FASTEST_SECTION_DISTANCES_M
-        ],
+        "fastest_sections": [fastest_section_payload(target, fastest_sections[target]) for target in FASTEST_SECTION_DISTANCES_M],
         "speed_distribution": speed_distribution(speed_buckets),
     }
 

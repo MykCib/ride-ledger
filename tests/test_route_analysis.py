@@ -139,7 +139,7 @@ class RouteAnalysisTests(unittest.TestCase):
     def test_commute_cache_version_matches_current_metric_schema(self):
         self.assertEqual(COMMUTES_CACHE_VERSION, 4)
         self.assertEqual(WORKOUTS_CACHE_VERSION, 5)
-        self.assertEqual(INSIGHTS_CACHE_VERSION, 3)
+        self.assertEqual(INSIGHTS_CACHE_VERSION, 4)
 
     def test_vertical_rate_uses_moving_time(self):
         self.assertEqual(vertical_rate(100, 1800), 200.0)
@@ -268,7 +268,7 @@ class RouteAnalysisTests(unittest.TestCase):
         elapsed = 0
         for index in range(21):
             if index:
-                elapsed += 20 if index <= 10 else 10
+                elapsed += 5 if index <= 10 else 4
             track.append({
                 "lat": 54.7000 + index * 0.001,
                 "lon": 25.2100,
@@ -278,11 +278,176 @@ class RouteAnalysisTests(unittest.TestCase):
 
         result = fastest_distance_section(track, 1000)
 
-        self.assertEqual(result["time_seconds"], 100.0)
-        self.assertEqual(result["speed_kmh"], 36.0)
+        self.assertEqual(result["time_seconds"], 40.0)
+        self.assertEqual(result["speed_kmh"], 90.0)
         self.assertEqual(result["start_km"], 1.0)
         self.assertEqual(result["end_km"], 2.0)
         self.assertIsNone(fastest_distance_section(track, 5000))
+
+    def test_fastest_distance_section_interpolates_between_samples_and_accepts_exact_boundary(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        interpolated = [
+            {
+                "lat": 54.7000 + index * 0.001,
+                "lon": 25.2100,
+                "distance_m": index * 90,
+                "t": (start + timedelta(seconds=index * 4)).isoformat(),
+            }
+            for index in range(13)
+        ]
+        boundary = [
+            {
+                "lat": 54.7000 + index * 0.001,
+                "lon": 25.2100,
+                "distance_m": index * 100,
+                "t": (start + timedelta(seconds=index * 4)).isoformat(),
+            }
+            for index in range(51)
+        ]
+
+        result = fastest_distance_section(interpolated, 1000)
+
+        self.assertEqual(result["time_seconds"], 44.4)
+        self.assertEqual(result["speed_kmh"], 81.0)
+        self.assertEqual(fastest_distance_section(boundary, 5000)["time_seconds"], 200.0)
+
+    def test_fastest_sections_reject_bad_timing_gaps_and_speed_jumps_but_keep_stop_gaps(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        def track(distances, timestamps, speeds=None):
+            return [
+                {
+                    "lat": 54.7000 + index * 0.001,
+                    "lon": 25.2100,
+                    "distance_m": distance,
+                    "t": timestamp.isoformat() if timestamp else None,
+                    **({"speed": speeds[index]} if speeds else {}),
+                }
+                for index, (distance, timestamp) in enumerate(zip(distances, timestamps))
+            ]
+
+        distances = [index * 100 for index in range(11)]
+        regular_times = [start + timedelta(seconds=index * 4) for index in range(11)]
+        missing_timestamp = regular_times.copy()
+        missing_timestamp[5] = None
+        duplicate_timestamp = regular_times.copy()
+        duplicate_timestamp[5] = duplicate_timestamp[4]
+        backwards_timestamp = regular_times.copy()
+        backwards_timestamp[5] = backwards_timestamp[4] - timedelta(seconds=1)
+        moving_gap = regular_times.copy()
+        moving_gap[5] = moving_gap[4] + timedelta(seconds=10)
+
+        self.assertIsNone(fastest_distance_section(track(distances, missing_timestamp), 1000))
+        self.assertIsNone(fastest_distance_section(track(distances, duplicate_timestamp), 1000))
+        self.assertIsNone(fastest_distance_section(track(distances, backwards_timestamp), 1000))
+        self.assertIsNone(fastest_distance_section(track(distances, moving_gap), 1000))
+
+        stop_distances = [0, 100, 200, 300, 400, 400, 500, 600, 700, 800, 900, 1000]
+        stop_times = [
+            start,
+            start + timedelta(seconds=4),
+            start + timedelta(seconds=8),
+            start + timedelta(seconds=12),
+            start + timedelta(seconds=16),
+            start + timedelta(seconds=40),
+            start + timedelta(seconds=44),
+            start + timedelta(seconds=48),
+            start + timedelta(seconds=52),
+            start + timedelta(seconds=56),
+            start + timedelta(seconds=60),
+            start + timedelta(seconds=64),
+        ]
+        stop_result = fastest_distance_section(track(stop_distances, stop_times), 1000)
+        self.assertEqual(stop_result["time_seconds"], 64.0)
+
+        jump_distances = [0, 100, 200, 300, 400, 1000]
+        jump_times = [start + timedelta(seconds=index * 4) for index in range(6)]
+        self.assertIsNone(fastest_distance_section(track(jump_distances, jump_times), 1000))
+
+    def test_fastest_archive_record_is_selected_before_rounding(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        def make_track(seconds_per_interval):
+            return [
+                {
+                    "lat": 54.7000 + index * 0.001,
+                    "lon": 25.2100,
+                    "distance_m": index * 100,
+                    "t": (start + timedelta(seconds=index * seconds_per_interval)).isoformat(),
+                }
+                for index in range(11)
+            ]
+
+        items = []
+        tracks = {}
+        for ride_id, interval in (("slow", 4.004), ("fast", 4.002)):
+            item = ride(ride_id, "2026-01-01T08:00:00+00:00")
+            item["file"] = f"{ride_id}.fit"
+            items.append(item)
+            tracks[item["file"]] = {"track": make_track(interval)}
+
+        with patch("web.app.parse_workout", side_effect=lambda path, include_track=False: tracks[path.name]):
+            result = build_workout_insights(items)
+
+        self.assertEqual(result["fastest_sections"][0]["ride_id"], "fast")
+        self.assertEqual(result["fastest_sections"][0]["time_seconds"], 40.0)
+
+    def test_speed_distribution_has_boundaries_empty_bins_and_distinct_rides(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        def make_track(speeds):
+            return {
+                "track": [
+                    {
+                        "lat": 54.7000 + index * 0.001,
+                        "lon": 25.2100,
+                        "distance_m": index * 100,
+                        "t": (start + timedelta(seconds=index)).isoformat(),
+                        "speed": speed,
+                    }
+                    for index, speed in enumerate(speeds)
+                ]
+            }
+
+        items = []
+        tracks = {}
+        for ride_id, speeds in (("one", [0, 5 / 3.6, 20 / 3.6, -1, 40]), ("two", [10 / 3.6, 10 / 3.6])):
+            item = ride(ride_id, "2026-01-01T08:00:00+00:00")
+            item["file"] = f"{ride_id}.fit"
+            items.append(item)
+            tracks[item["file"]] = make_track(speeds)
+
+        with patch("web.app.parse_workout", side_effect=lambda path, include_track=False: tracks[path.name]):
+            result = build_workout_insights(items)
+
+        self.assertEqual(result["speed_distribution"], [
+            {"label": "0-5", "min_kmh": 0, "max_kmh": 5, "point_count": 1, "ride_count": 1},
+            {"label": "5-10", "min_kmh": 5, "max_kmh": 10, "point_count": 1, "ride_count": 1},
+            {"label": "10-15", "min_kmh": 10, "max_kmh": 15, "point_count": 2, "ride_count": 1},
+            {"label": "15-20", "min_kmh": 15, "max_kmh": 20, "point_count": 0, "ride_count": 0},
+            {"label": "20-25", "min_kmh": 20, "max_kmh": 25, "point_count": 1, "ride_count": 1},
+        ])
+
+    def test_insights_rebuilds_a_version_two_cache(self):
+        with TemporaryDirectory() as directory:
+            data = Path(directory)
+            (data / "insights_cache.json").write_text(json.dumps({
+                "version": 2,
+                "signature": [["timezone", "UTC"]],
+                "insights": {"old": True},
+            }))
+            rebuilt = {"timezone": "UTC", "fastest_sections": [], "speed_distribution": []}
+            with patch("web.app.DATA", data):
+                with patch.dict(os.environ, {"RIDE_LEDGER_TIMEZONE": "UTC"}):
+                    with patch("web.app._insights_cache", None), patch("web.app._insights_signature", None):
+                        with patch("web.app.workouts", return_value=[]), patch("web.app.build_workout_insights", return_value=rebuilt) as builder:
+                            with app.test_client() as client:
+                                response = client.get("/api/insights")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json(), rebuilt)
+            builder.assert_called_once_with([])
+            self.assertEqual(json.loads((data / "insights_cache.json").read_text())["version"], 4)
 
     def test_activity_insights_include_fastest_sections_and_speed_distribution(self):
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -291,7 +456,7 @@ class RouteAnalysisTests(unittest.TestCase):
                 "lat": 54.7000 + index * 0.001,
                 "lon": 25.2100,
                 "distance_m": index * 100,
-                "t": (start + timedelta(seconds=index * 10)).isoformat(),
+                "t": (start + timedelta(seconds=index * 4)).isoformat(),
                 "speed": 0 if index == 0 else (1 if index < 10 else 2),
             }
             for index in range(21)
@@ -304,7 +469,7 @@ class RouteAnalysisTests(unittest.TestCase):
 
         self.assertEqual([section["distance_km"] for section in result["fastest_sections"]], [1, 2, 5])
         self.assertEqual(result["fastest_sections"][0]["ride_id"], "tracked")
-        self.assertEqual(result["fastest_sections"][1]["speed_kmh"], 36.0)
+        self.assertEqual(result["fastest_sections"][1]["speed_kmh"], 90.0)
         self.assertIsNone(result["fastest_sections"][2]["time_seconds"])
         self.assertEqual(result["speed_distribution"][:2], [
             {"label": "0-5", "min_kmh": 0, "max_kmh": 5, "point_count": 10, "ride_count": 1},
