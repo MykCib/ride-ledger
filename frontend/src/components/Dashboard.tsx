@@ -9,6 +9,7 @@ import { AllRoutesMap, RouteMap } from './Maps';
 import { ElevationChart, SegmentChart, SpeedChart, WeeklyChart } from './Charts';
 import { CommuteSection } from './Commutes';
 import { SegmentsSection } from './Segments';
+import { ActivitySection } from './Activity';
 import { WeatherSection } from './Weather';
 
 const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -321,6 +322,7 @@ export function DashboardPage() {
           <WeatherSection analysis={weather} />
           <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={rides} /></div></div></section>
           <InsightsSection insights={insights} />
+          <ActivitySection insights={insights} />
           {overviewError && <p className="route-note">{overviewError.message}</p>}
           <section className="content-grid">
             <RideList rides={rides} selectedId={selectedId} assignments={commutes?.assignments ?? emptyAssignments} />

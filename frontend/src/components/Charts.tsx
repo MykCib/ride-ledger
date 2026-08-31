@@ -86,6 +86,60 @@ export function LineChart({ values, labels, fill, beginAtZero = true, onPointHov
   return <canvas ref={canvasRef} />;
 }
 
+export function BarChart({ values, labels, fill }: { values: number[]; labels: string[]; fill: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chartRef = useRef<Chart<'bar'> | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const chart = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: [],
+        datasets: [{
+          data: [],
+          backgroundColor: fill,
+          borderWidth: 0,
+          borderRadius: 2,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: {
+            grid: { display: false },
+            ticks: { maxRotation: 0, color: '#77817c', font: { family: 'DM Mono', size: 10 } },
+          },
+          y: {
+            beginAtZero: true,
+            ticks: { precision: 0, color: '#77817c', font: { family: 'DM Mono', size: 10 } },
+            grid: { color: '#dce2dc' },
+          },
+        },
+      },
+    });
+    chartRef.current = chart;
+    return () => {
+      chart.destroy();
+      chartRef.current = null;
+    };
+  }, [fill]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = values;
+    chart.update('none');
+  }, [labels, values]);
+
+  return <canvas ref={canvasRef} />;
+}
+
 interface SpeedChartProps {
   track: TrackPoint[];
   onPointHover: (point: TrackPoint | null) => void;

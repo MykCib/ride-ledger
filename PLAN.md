@@ -16,6 +16,7 @@
 - Segment rows include average speed, average elapsed time, and the fastest observed time with its record ride.
 - Ride details include elevation profiles plus climbing and descent rates based on moving time.
 - Weather analysis compares speed against temperature and wind, dry versus wet rides, fastest-ride conditions, and route directions.
+- Activity patterns include timezone-aware weekday and departure-hour distributions plus a riding calendar heatmap.
 - Available data includes GPS, speed, altitude, distance, temperature, and timestamps.
 - Heart-rate and cadence values are currently zero and should not be used.
 
@@ -41,9 +42,9 @@
 - [x] Show typical arrival time.
 - [x] Show average commute duration.
 - [x] Show distance variation between repeated rides.
-- [ ] Show weekday riding patterns.
-- [ ] Show departure-hour patterns.
-- [ ] Add a riding activity calendar heatmap.
+- [x] Show weekday riding patterns.
+- [x] Show departure-hour patterns.
+- [x] Add a riding activity calendar heatmap.
 
 ## Phase 3: Route Segments
 
@@ -117,7 +118,7 @@
 4. [x] Personal-best segment tracking.
 5. [x] Elevation profile and climbing statistics.
 6. [x] Weather-versus-performance analysis.
-7. [ ] Calendar and weekday analysis.
+7. [x] Calendar and weekday analysis.
 8. [ ] Animated route playback.
 9. [ ] Data-quality checks.
 10. [ ] Advanced map layers and filters.

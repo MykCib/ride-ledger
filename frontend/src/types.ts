@@ -163,6 +163,12 @@ export interface WeatherAnalysis {
   directions: WeatherDirectionComparison[];
 }
 
+export interface ActivityDay {
+  date: string;
+  ride_count: number;
+  distance_km: number | null;
+}
+
 export interface CommuteAnalysis {
   timezone: string;
   groups: RouteGroup[];
@@ -171,9 +177,12 @@ export interface CommuteAnalysis {
 }
 
 export interface Insights {
+  timezone: string;
   segments: Array<number | null>;
   segment_rides: number[];
   weekday_counts: number[];
+  departure_hour_counts: number[];
+  calendar: ActivityDay[];
   fastest: WorkoutSummary | null;
   longest: WorkoutSummary | null;
 }

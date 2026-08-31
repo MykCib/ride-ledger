@@ -33,6 +33,7 @@ WORKOUTS_CACHE_VERSION = 3
 COMMUTES_CACHE_VERSION = 4
 SEGMENTS_CACHE_VERSION = 2
 WEATHER_ANALYSIS_CACHE_VERSION = 1
+INSIGHTS_CACHE_VERSION = 2
 LOCATION_NAMES_PATH = DATA / "location_names.json"
 DEFAULT_ANALYTICS_TIMEZONE = "Europe/Vilnius"
 STOP_SPEED_MPS = 0.5
@@ -1152,26 +1153,45 @@ def rename_commute_location(location_id):
 @app.get("/api/insights")
 def workout_insights():
     global _insights_cache, _insights_signature
+    timezone_name, _ = analytics_timezone()
     signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in sorted(DATA.glob("*.fit")))
+    signature += (("timezone", timezone_name),)
     if _insights_cache is not None and signature == _insights_signature:
         return jsonify(_insights_cache)
     cache_path = DATA / "insights_cache.json"
     if cache_path.is_file():
         try:
             cached = json.loads(cache_path.read_text())
-            if tuple(tuple(item) for item in cached["signature"]) == signature:
+            if cached.get("version") == INSIGHTS_CACHE_VERSION and tuple(tuple(item) for item in cached["signature"]) == signature:
                 _insights_signature = signature
                 _insights_cache = cached["insights"]
                 return jsonify(_insights_cache)
         except (KeyError, ValueError, OSError, json.JSONDecodeError):
             pass
-    items = workouts()
+    _insights_cache = build_workout_insights(workouts())
+    _insights_signature = signature
+    cache_path.write_text(json.dumps({"version": INSIGHTS_CACHE_VERSION, "signature": signature, "insights": _insights_cache}))
+    return jsonify(_insights_cache)
+
+
+def build_workout_insights(items):
+    timezone_name, timezone_value = analytics_timezone()
     bins = [[] for _ in range(10)]
     weekdays = [0] * 7
+    departure_hours = [0] * 24
+    calendar = {}
     for item in items:
-        if item["date"]:
-            weekday = datetime.fromisoformat(item["date"]).weekday()
-            weekdays[weekday] += 1
+        date = item_datetime(item)
+        if date is not None:
+            local_date = date.astimezone(timezone_value)
+            weekdays[local_date.weekday()] += 1
+            departure_hours[local_date.hour] += 1
+            day = local_date.date().isoformat()
+            entry = calendar.setdefault(day, {"date": day, "ride_count": 0, "distance_km": 0.0})
+            entry["ride_count"] += 1
+            distance = finite_number(item.get("distance_km"))
+            if distance is not None:
+                entry["distance_km"] += distance
         try:
             track = parse_workout(DATA / item["file"], include_track=True)["track"]
             distances = [point["distance_m"] for point in track if point["distance_m"] is not None]
@@ -1182,16 +1202,21 @@ def workout_insights():
                     bins[index].append(point["speed"] * 3.6)
         except Exception:
             continue
-    _insights_signature = signature
-    _insights_cache = {
+    speed_items = [item for item in items if finite_number(item.get("average_speed_kmh")) is not None]
+    distance_items = [item for item in items if finite_number(item.get("distance_km")) is not None]
+    return {
+        "timezone": timezone_name,
         "segments": [number(sum(values) / len(values), 1) if values else None for values in bins],
         "segment_rides": [len(values) for values in bins],
         "weekday_counts": weekdays,
-        "fastest": max(items, key=lambda x: x["average_speed_kmh"] or 0, default=None),
-        "longest": max(items, key=lambda x: x["distance_km"] or 0, default=None),
+        "departure_hour_counts": departure_hours,
+        "calendar": [
+            {**entry, "distance_km": number(entry["distance_km"], 2)}
+            for _, entry in sorted(calendar.items())
+        ],
+        "fastest": max(speed_items, key=lambda item: finite_number(item["average_speed_kmh"]), default=None),
+        "longest": max(distance_items, key=lambda item: finite_number(item["distance_km"]), default=None),
     }
-    cache_path.write_text(json.dumps({"signature": signature, "insights": _insights_cache}))
-    return jsonify(_insights_cache)
 
 
 if __name__ == "__main__":

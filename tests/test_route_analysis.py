@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from web.app import COMMUTES_CACHE_VERSION, WORKOUTS_CACHE_VERSION, build_commute_analysis, build_route_segments, build_weather_analysis, route_performance, vertical_rate
+from web.app import COMMUTES_CACHE_VERSION, INSIGHTS_CACHE_VERSION, WORKOUTS_CACHE_VERSION, build_commute_analysis, build_route_segments, build_weather_analysis, build_workout_insights, route_performance, vertical_rate
 
 
 def ride(ride_id, date, distance=5.0, speed=20.0):
@@ -139,6 +139,7 @@ class RouteAnalysisTests(unittest.TestCase):
     def test_commute_cache_version_matches_current_metric_schema(self):
         self.assertEqual(COMMUTES_CACHE_VERSION, 4)
         self.assertEqual(WORKOUTS_CACHE_VERSION, 3)
+        self.assertEqual(INSIGHTS_CACHE_VERSION, 2)
 
     def test_vertical_rate_uses_moving_time(self):
         self.assertEqual(vertical_rate(100, 1800), 200.0)
@@ -181,6 +182,26 @@ class RouteAnalysisTests(unittest.TestCase):
         self.assertEqual(result["directions"][0]["outbound"]["count"], 2)
         self.assertEqual(result["directions"][0]["return"]["average_speed_kmh"], 20.0)
         self.assertEqual(result["temperature_bins"][0]["label"], "15-20 C")
+
+    def test_activity_insights_include_local_weekday_hours_and_calendar(self):
+        items = [
+            ride("monday", "2026-08-31T08:15:00+00:00", distance=5.0),
+            ride("monday-late", "2026-08-31T17:15:00+00:00", distance=6.0),
+            ride("tuesday", "2026-09-01T08:15:00+00:00", distance=7.0),
+        ]
+        with TemporaryDirectory() as directory:
+            with patch("web.app.DATA", Path(directory)):
+                with patch.dict(os.environ, {"RIDE_LEDGER_TIMEZONE": "UTC"}):
+                    result = build_workout_insights(items)
+
+        self.assertEqual(result["timezone"], "UTC")
+        self.assertEqual(result["weekday_counts"][:2], [2, 1])
+        self.assertEqual(result["departure_hour_counts"][8], 2)
+        self.assertEqual(result["departure_hour_counts"][17], 1)
+        self.assertEqual(result["calendar"], [
+            {"date": "2026-08-31", "ride_count": 2, "distance_km": 11.0},
+            {"date": "2026-09-01", "ride_count": 1, "distance_km": 7.0},
+        ])
 
     def test_repeated_routes_are_divided_into_supported_geographic_segments(self):
         def track(offset, seconds_per_point):
