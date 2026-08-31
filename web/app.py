@@ -19,12 +19,17 @@ _workouts_cache = None
 _workouts_signature = None
 _routes_cache = None
 _routes_signature = None
+_tracks_cache = None
+_tracks_signature = None
 _commutes_cache = None
 _commutes_signature = None
+_segments_cache = None
+_segments_signature = None
 _detail_cache = {}
 _routes_lock = Lock()
 WORKOUTS_CACHE_VERSION = 2
 COMMUTES_CACHE_VERSION = 4
+SEGMENTS_CACHE_VERSION = 1
 LOCATION_NAMES_PATH = DATA / "location_names.json"
 DEFAULT_ANALYTICS_TIMEZONE = "Europe/Vilnius"
 STOP_SPEED_MPS = 0.5
@@ -34,6 +39,7 @@ MAX_STOP_DISTANCE_M = 5.0
 RECORD_INTERVAL_SECONDS = 1
 ENDPOINT_CLUSTER_RADIUS_M = 500
 DAY_SECONDS = 24 * 60 * 60
+ROUTE_SEGMENT_COUNT = 10
 
 
 def degrees(value):
@@ -401,6 +407,110 @@ def build_commute_analysis(items, routes):
     }
 
 
+def track_progress(track):
+    records = []
+    for point in track or []:
+        try:
+            latitude = float(point["lat"])
+            longitude = float(point["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if isfinite(latitude) and isfinite(longitude):
+            distance = point.get("distance_m")
+            try:
+                distance = float(distance)
+            except (TypeError, ValueError):
+                distance = None
+            records.append(([latitude, longitude], distance if distance is not None and isfinite(distance) else None))
+    points = [record[0] for record in records]
+    if len(points) < 2:
+        return [], 0
+
+    raw_distances = [record[1] for record in records]
+    valid_raw = all(value is not None for value in raw_distances)
+    valid_raw = valid_raw and all(second >= first for first, second in zip(raw_distances, raw_distances[1:]))
+    if valid_raw and raw_distances[-1] > raw_distances[0]:
+        # FIT distance is cumulative and avoids adding GPS jitter to every segment.
+        cumulative = [value - raw_distances[0] for value in raw_distances]
+    else:
+        cumulative = [0.0]
+        for previous, current in zip(points, points[1:]):
+            cumulative.append(cumulative[-1] + distance_meters(previous, current))
+    return list(zip(points, cumulative)), cumulative[-1]
+
+
+def interpolate_track_point(progress, target):
+    if target <= progress[0][1]:
+        return progress[0][0]
+    for index, (_, current_distance) in enumerate(progress[1:], 1):
+        if target <= current_distance:
+            previous_point, previous_distance = progress[index - 1]
+            current_point, _ = progress[index]
+            span = current_distance - previous_distance
+            ratio = (target - previous_distance) / span if span else 0
+            return [
+                previous_point[0] + (current_point[0] - previous_point[0]) * ratio,
+                previous_point[1] + (current_point[1] - previous_point[1]) * ratio,
+            ]
+    return progress[-1][0]
+
+
+def resample_route(track, segment_count=ROUTE_SEGMENT_COUNT):
+    progress, total_distance = track_progress(track)
+    if not progress or total_distance <= 0:
+        return None
+    samples = [
+        interpolate_track_point(progress, total_distance * index / segment_count)
+        for index in range(segment_count + 1)
+    ]
+    return samples, total_distance
+
+
+def build_route_segments(groups, tracks):
+    segments = []
+    for group in groups:
+        for direction in ("outbound", "return"):
+            performance = group[direction]
+            ride_ids = performance["ride_ids"]
+            if len(ride_ids) < 2:
+                continue
+            sampled_routes = []
+            for ride_id in ride_ids:
+                sampled = resample_route(tracks.get(ride_id, []))
+                if sampled is not None:
+                    sampled_routes.append(sampled)
+            if len(sampled_routes) < 2:
+                continue
+            for index in range(ROUTE_SEGMENT_COUNT):
+                starts = [sampled[0][index] for sampled in sampled_routes]
+                ends = [sampled[0][index + 1] for sampled in sampled_routes]
+                average_start = [
+                    sum(point[axis] for point in starts) / len(starts)
+                    for axis in (0, 1)
+                ]
+                average_end = [
+                    sum(point[axis] for point in ends) / len(ends)
+                    for axis in (0, 1)
+                ]
+                average_distance = sum(sampled[1] for sampled in sampled_routes) / len(sampled_routes)
+                segments.append({
+                    "id": f"{group['id']}-{direction}-{index + 1}",
+                    "group_id": group["id"],
+                    "label": group["label"],
+                    "direction": direction,
+                    "index": index + 1,
+                    "progress_start": index * 100 // ROUTE_SEGMENT_COUNT,
+                    "progress_end": (index + 1) * 100 // ROUTE_SEGMENT_COUNT,
+                    "start": [round(average_start[0], 6), round(average_start[1], 6)],
+                    "end": [round(average_end[0], 6), round(average_end[1], 6)],
+                    "distance_km": number(average_distance / ROUTE_SEGMENT_COUNT / 1000, 2),
+                    "ride_count": len(sampled_routes),
+                    "total_rides": len(ride_ids),
+                    "coverage_percent": number(len(sampled_routes) / len(ride_ids) * 100, 1),
+                })
+    return {"segment_count": ROUTE_SEGMENT_COUNT, "segments": segments}
+
+
 def detect_stops(samples, session_start=None, elapsed_seconds=None):
     """Infer stationary intervals from FIT records and recording pauses.
 
@@ -678,7 +788,7 @@ def route_overlay_data():
 
 
 def _route_overlay_data():
-    global _routes_cache, _routes_signature
+    global _routes_cache, _routes_signature, _tracks_cache, _tracks_signature
     paths = sorted(DATA.glob("*.fit"), reverse=True)
     signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
     if _routes_cache is not None and signature == _routes_signature:
@@ -690,21 +800,49 @@ def _route_overlay_data():
             if tuple(tuple(item) for item in cached["signature"]) == signature:
                 _routes_signature = signature
                 _routes_cache = cached["routes"]
+                if _tracks_signature != signature:
+                    _tracks_cache = None
                 return _routes_cache
         except (KeyError, ValueError, OSError, json.JSONDecodeError):
             pass
     routes = []
+    tracks = {}
     for path in paths:
         try:
             points = parse_workout(path, include_track=True)["track"]
+            tracks[path.stem] = points
             stride = max(1, len(points) // 300)
             routes.append({"id": path.stem, "points": [[point["lat"], point["lon"]] for point in points[::stride]]})
         except Exception as error:
             app.logger.warning("Skipping route %s: %s", path.name, error)
     _routes_signature = signature
     _routes_cache = routes
+    _tracks_signature = signature
+    _tracks_cache = tracks
     cache_path.write_text(json.dumps({"signature": signature, "routes": routes}))
     return routes
+
+
+def route_track_data():
+    with _routes_lock:
+        return _route_track_data()
+
+
+def _route_track_data():
+    global _tracks_cache, _tracks_signature
+    paths = sorted(DATA.glob("*.fit"), reverse=True)
+    signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
+    if _tracks_cache is not None and signature == _tracks_signature:
+        return _tracks_cache
+    tracks = {}
+    for path in paths:
+        try:
+            tracks[path.stem] = parse_workout(path, include_track=True)["track"]
+        except Exception as error:
+            app.logger.warning("Skipping track %s: %s", path.name, error)
+    _tracks_signature = signature
+    _tracks_cache = tracks
+    return tracks
 
 
 @app.get("/api/routes")
@@ -743,9 +881,39 @@ def commute_analysis():
     return jsonify(commute_analysis_data())
 
 
+def segment_analysis_data():
+    global _segments_cache, _segments_signature
+    paths = sorted(DATA.glob("*.fit"), reverse=True)
+    signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
+    if LOCATION_NAMES_PATH.is_file():
+        signature += ((LOCATION_NAMES_PATH.name, LOCATION_NAMES_PATH.stat().st_size, LOCATION_NAMES_PATH.stat().st_mtime_ns),)
+    if _segments_cache is not None and signature == _segments_signature:
+        return _segments_cache
+    cache_path = DATA / "segments_cache.json"
+    if cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text())
+            if cached.get("version") == SEGMENTS_CACHE_VERSION and tuple(tuple(item) for item in cached["signature"]) == signature:
+                _segments_signature = signature
+                _segments_cache = cached["segments"]
+                return _segments_cache
+        except (KeyError, ValueError, OSError, json.JSONDecodeError):
+            pass
+    commute = commute_analysis_data()
+    _segments_cache = build_route_segments(commute["groups"], route_track_data())
+    _segments_signature = signature
+    cache_path.write_text(json.dumps({"version": SEGMENTS_CACHE_VERSION, "signature": signature, "segments": _segments_cache}))
+    return _segments_cache
+
+
+@app.get("/api/segments")
+def route_segments():
+    return jsonify(segment_analysis_data())
+
+
 @app.put("/api/commutes/locations/<location_id>")
 def rename_commute_location(location_id):
-    global _commutes_cache, _commutes_signature
+    global _commutes_cache, _commutes_signature, _segments_cache, _segments_signature
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return jsonify({"error": "Request body must be an object"}), 400
@@ -760,9 +928,15 @@ def rename_commute_location(location_id):
         return jsonify({"error": "Location not found"}), 404
     _commutes_cache = None
     _commutes_signature = None
+    _segments_cache = None
+    _segments_signature = None
     cache_path = DATA / "commutes_cache.json"
     try:
         cache_path.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        (DATA / "segments_cache.json").unlink()
     except FileNotFoundError:
         pass
     return jsonify(commute_analysis_data())

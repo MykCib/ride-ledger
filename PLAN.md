@@ -12,6 +12,7 @@
 - Ride details include moving-versus-elapsed time, estimated stopped time, stop counts, and stop intervals.
 - Repeated routes are stacked on a grouped map, with endpoint labels persisted by coordinate and editable across all routes.
 - Commute cards include median departure and arrival times, average duration, distance variation, and direction-specific performance.
+- Repeated directions are normalized into ten geographic segments with ride coverage and segment lengths.
 - Available data includes GPS, speed, altitude, distance, temperature, and timestamps.
 - Heart-rate and cadence values are currently zero and should not be used.
 
@@ -43,8 +44,8 @@
 
 ## Phase 3: Route Segments
 
-- [ ] Divide repeated routes into geographic segments.
-- [ ] Detect frequently repeated road sections.
+- [x] Divide repeated routes into geographic segments.
+- [x] Detect frequently repeated road sections.
 - [ ] Calculate average speed per segment.
 - [ ] Track fastest time through each segment.
 - [ ] Show segment personal records.
@@ -109,7 +110,7 @@
 
 1. [x] Stop detection and moving-versus-elapsed-time analysis.
 2. [x] Automatic outbound and return route grouping.
-3. [ ] Repeated route segment detection.
+3. [x] Repeated route segment detection.
 4. [ ] Personal-best segment tracking.
 5. [ ] Elevation profile and climbing statistics.
 6. [ ] Weather-versus-performance analysis.

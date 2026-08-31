@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from web.app import COMMUTES_CACHE_VERSION, build_commute_analysis, route_performance
+from web.app import COMMUTES_CACHE_VERSION, build_commute_analysis, build_route_segments, route_performance
 
 
 def ride(ride_id, date, distance=5.0, speed=20.0):
@@ -138,6 +138,32 @@ class RouteAnalysisTests(unittest.TestCase):
 
     def test_commute_cache_version_matches_current_metric_schema(self):
         self.assertEqual(COMMUTES_CACHE_VERSION, 4)
+
+    def test_repeated_routes_are_divided_into_supported_geographic_segments(self):
+        def track(offset):
+            return [
+                {"lat": 54.7000 + offset + index * 0.001, "lon": 25.2100, "distance_m": index * 100}
+                for index in range(11)
+            ]
+
+        groups = [{
+            "id": "route-1-2",
+            "label": "A <-> B",
+            "outbound": {"ride_ids": ["ride-a", "ride-b"], "count": 2},
+            "return": {"ride_ids": [], "count": 0},
+        }]
+        result = build_route_segments(groups, {"ride-a": track(0), "ride-b": track(0.0001)})
+
+        self.assertEqual(result["segment_count"], 10)
+        self.assertEqual(len(result["segments"]), 10)
+        first = result["segments"][0]
+        self.assertEqual(first["id"], "route-1-2-outbound-1")
+        self.assertEqual(first["progress_start"], 0)
+        self.assertEqual(first["progress_end"], 10)
+        self.assertEqual(first["ride_count"], 2)
+        self.assertEqual(first["total_rides"], 2)
+        self.assertEqual(first["coverage_percent"], 100.0)
+        self.assertEqual(first["distance_km"], 0.1)
 
     def test_saved_location_name_is_applied_to_group_and_assignment(self):
         routes = [

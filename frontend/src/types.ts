@@ -92,6 +92,27 @@ export interface RouteAssignment {
   label: string;
 }
 
+export interface RouteSegment {
+  id: string;
+  group_id: string;
+  label: string;
+  direction: Exclude<RouteDirection, 'loop'>;
+  index: number;
+  progress_start: number;
+  progress_end: number;
+  start: RouteCoordinate;
+  end: RouteCoordinate;
+  distance_km: number | null;
+  ride_count: number;
+  total_rides: number;
+  coverage_percent: number | null;
+}
+
+export interface SegmentAnalysis {
+  segment_count: number;
+  segments: RouteSegment[];
+}
+
 export interface CommuteAnalysis {
   timezone: string;
   groups: RouteGroup[];

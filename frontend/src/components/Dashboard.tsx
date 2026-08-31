@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { getCommutes, getInsights, getRoutes, getWorkouts, renameCommuteLocation } from '../api';
+import { getCommutes, getInsights, getRoutes, getSegments, getWorkouts, renameCommuteLocation } from '../api';
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
 import { formatClock, formatDuration, formatSpeed, formatTime, formatWorkoutTitle } from '../format';
-import type { CommuteAnalysis, Insights, RouteAssignment, RouteOverlay, TrackPoint, WorkoutDetail, WorkoutSummary } from '../types';
+import type { CommuteAnalysis, Insights, RouteAssignment, RouteOverlay, SegmentAnalysis, TrackPoint, WorkoutDetail, WorkoutSummary } from '../types';
 import { AllRoutesMap, RouteMap } from './Maps';
 import { SegmentChart, SpeedChart, WeeklyChart } from './Charts';
 import { CommuteSection } from './Commutes';
+import { SegmentsSection } from './Segments';
 
 const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const emptyAssignments: Record<string, RouteAssignment> = {};
@@ -215,6 +216,7 @@ export function DashboardPage() {
   const [routes, setRoutes] = useState<RouteOverlay[]>([]);
   const [insights, setInsights] = useState<Insights | null>(null);
   const [commutes, setCommutes] = useState<CommuteAnalysis | null>(null);
+  const [segments, setSegments] = useState<SegmentAnalysis | null>(null);
   const [overviewError, setOverviewError] = useState<Error | null>(null);
 
   useEffect(() => {
@@ -248,8 +250,8 @@ export function DashboardPage() {
     const controller = new AbortController();
     let active = true;
     setOverviewError(null);
-    Promise.allSettled([getRoutes(controller.signal), getInsights(controller.signal), getCommutes(controller.signal)])
-      .then(([routeResult, insightResult, commuteResult]) => {
+    Promise.allSettled([getRoutes(controller.signal), getInsights(controller.signal), getCommutes(controller.signal), getSegments(controller.signal)])
+      .then(([routeResult, insightResult, commuteResult, segmentResult]) => {
         if (!active) return;
         overviewVersion.current = refreshKey;
         const errors: string[] = [];
@@ -259,6 +261,8 @@ export function DashboardPage() {
         else errors.push(`Insights: ${insightResult.reason instanceof Error ? insightResult.reason.message : 'request failed'}`);
         if (commuteResult.status === 'fulfilled') setCommutes(commuteResult.value);
         else errors.push(`Route directions: ${commuteResult.reason instanceof Error ? commuteResult.reason.message : 'request failed'}`);
+        if (segmentResult.status === 'fulfilled') setSegments(segmentResult.value);
+        else errors.push(`Route segments: ${segmentResult.reason instanceof Error ? segmentResult.reason.message : 'request failed'}`);
         if (errors.length) setOverviewError(new Error(errors.join(' · ')));
       });
     return () => {
@@ -274,7 +278,15 @@ export function DashboardPage() {
   };
   const handleRenameLocation = async (locationId: string, name: string) => {
     try {
-      setCommutes(await renameCommuteLocation(locationId, name));
+      const nextCommutes = await renameCommuteLocation(locationId, name);
+      setCommutes(nextCommutes);
+      setSegments((current) => current ? {
+        ...current,
+        segments: current.segments.map((segment) => ({
+          ...segment,
+          label: nextCommutes.groups.find((group) => group.id === segment.group_id)?.label ?? segment.label,
+        })),
+      } : current);
     } catch (error: unknown) {
       setOverviewError(error instanceof Error ? error : new Error('Could not rename location'));
       throw error;
@@ -291,6 +303,7 @@ export function DashboardPage() {
           <Stats rides={rides} />
           <AllRoutesSection routes={routes} />
           <CommuteSection timezone={commutes?.timezone ?? 'UTC'} groups={commutes?.groups ?? []} routes={routes} locations={commutes?.locations ?? []} onRename={handleRenameLocation} />
+          <SegmentsSection segmentCount={segments?.segment_count ?? 0} segments={segments?.segments ?? []} />
           <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={rides} /></div></div></section>
           <InsightsSection insights={insights} />
           {overviewError && <p className="route-note">{overviewError.message}</p>}
