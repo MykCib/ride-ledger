@@ -6,10 +6,11 @@ interface LineChartProps {
   values: number[];
   labels: string[];
   fill: string;
+  beginAtZero?: boolean;
   onPointHover?: (index: number | null) => void;
 }
 
-export function LineChart({ values, labels, fill, onPointHover }: LineChartProps) {
+export function LineChart({ values, labels, fill, beginAtZero = true, onPointHover }: LineChartProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<Chart<'line'> | null>(null);
   const hoverRef = useRef(onPointHover);
@@ -60,7 +61,7 @@ export function LineChart({ values, labels, fill, onPointHover }: LineChartProps
             ticks: { maxTicksLimit: 8, color: '#77817c', font: { family: 'DM Mono', size: 10 } },
           },
           y: {
-            beginAtZero: true,
+            beginAtZero,
             grid: { color: '#dce2dc' },
             ticks: { color: '#77817c', font: { family: 'DM Mono', size: 10 } },
           },
@@ -72,7 +73,7 @@ export function LineChart({ values, labels, fill, onPointHover }: LineChartProps
       chart.destroy();
       chartRef.current = null;
     };
-  }, [fill]);
+  }, [beginAtZero, fill]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -124,4 +125,21 @@ export function WeeklyChart({ items }: { items: Array<{ date: string | null; dis
 export function SegmentChart({ values }: { values: Array<number | null> }) {
   const numbers = values.map((value) => value || 0);
   return <LineChart values={numbers} labels={numbers.map((_, index) => `${index * 10}%`)} fill="rgba(200,230,106,.35)" />;
+}
+
+export function ElevationChart({ track }: { track: TrackPoint[] }) {
+  const valid = track.filter((point) => point.altitude != null);
+  const stride = Math.max(1, Math.ceil(valid.length / 100));
+  const samples = valid.filter((_, index) => index % stride === 0);
+  const values = samples.map((sample) => sample.altitude ?? 0);
+  const labels = samples.map((sample, index) => sample.distance_m != null ? `${(sample.distance_m / 1000).toFixed(1)} km` : `${index * 10}%`);
+
+  return (
+    <LineChart
+      values={values}
+      labels={labels}
+      fill="rgba(90,120,160,.22)"
+      beginAtZero={false}
+    />
+  );
 }

@@ -30,6 +30,10 @@ export function formatSpeed(value: number | null): string {
   return value == null ? '—' : `${value.toFixed(1)} km/h`;
 }
 
+export function formatVerticalRate(value: number | null): string {
+  return value == null ? '—' : `${value.toFixed(0)} m/h`;
+}
+
 export function formatDate(value: string | null, options?: Intl.DateTimeFormatOptions): string {
   if (!value) return '—';
   return new Date(value).toLocaleString(undefined, options);

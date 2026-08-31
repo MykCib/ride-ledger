@@ -27,7 +27,7 @@ _segments_cache = None
 _segments_signature = None
 _detail_cache = {}
 _routes_lock = Lock()
-WORKOUTS_CACHE_VERSION = 2
+WORKOUTS_CACHE_VERSION = 3
 COMMUTES_CACHE_VERSION = 4
 SEGMENTS_CACHE_VERSION = 2
 LOCATION_NAMES_PATH = DATA / "location_names.json"
@@ -48,6 +48,17 @@ def degrees(value):
 
 def number(value, digits=1):
     return round(float(value), digits) if value is not None else None
+
+
+def vertical_rate(elevation, moving):
+    try:
+        elevation = float(elevation)
+        moving = float(moving)
+    except (TypeError, ValueError):
+        return None
+    if not isfinite(elevation) or not isfinite(moving) or moving <= 0:
+        return None
+    return number(elevation / moving * 3600, 1)
 
 
 def as_utc(value):
@@ -734,6 +745,8 @@ def parse_workout(path, include_track=False):
         "max_speed_kmh": number(session.get("enhanced_max_speed", session.get("max_speed")) * 3.6 if session.get("enhanced_max_speed", session.get("max_speed")) is not None else None, 1),
         "ascent_m": number(session.get("total_ascent"), 0),
         "descent_m": number(session.get("total_descent"), 0),
+        "climbing_rate_mph": vertical_rate(session.get("total_ascent"), moving),
+        "descent_rate_mph": vertical_rate(session.get("total_descent"), moving),
         "calories": session.get("total_calories"),
         "temperature_c": number(session.get("avg_temperature"), 0),
         "points": point_count,

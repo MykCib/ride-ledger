@@ -14,6 +14,7 @@
 - Commute cards include median departure and arrival times, average duration, distance variation, and direction-specific performance.
 - Repeated directions are normalized into ten geographic segments with ride coverage and segment lengths.
 - Segment rows include average speed, average elapsed time, and the fastest observed time with its record ride.
+- Ride details include elevation profiles plus climbing and descent rates based on moving time.
 - Available data includes GPS, speed, altitude, distance, temperature, and timestamps.
 - Heart-rate and cadence values are currently zero and should not be used.
 
@@ -24,8 +25,8 @@
 - [ ] Add fastest 5 km section.
 - [ ] Add personal-best records for repeated route sections.
 - [ ] Add speed distribution histogram.
-- [ ] Add elevation profile chart.
-- [ ] Add climbing rate and descent rate.
+- [x] Add elevation profile chart.
+- [x] Add climbing rate and descent rate.
 - [x] Add moving time versus elapsed time.
 - [x] Add estimated stopped time.
 - [x] Add stop count and stop durations.
@@ -113,7 +114,7 @@
 2. [x] Automatic outbound and return route grouping.
 3. [x] Repeated route segment detection.
 4. [x] Personal-best segment tracking.
-5. [ ] Elevation profile and climbing statistics.
+5. [x] Elevation profile and climbing statistics.
 6. [ ] Weather-versus-performance analysis.
 7. [ ] Calendar and weekday analysis.
 8. [ ] Animated route playback.

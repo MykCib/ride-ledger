@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from web.app import COMMUTES_CACHE_VERSION, build_commute_analysis, build_route_segments, route_performance
+from web.app import COMMUTES_CACHE_VERSION, WORKOUTS_CACHE_VERSION, build_commute_analysis, build_route_segments, route_performance, vertical_rate
 
 
 def ride(ride_id, date, distance=5.0, speed=20.0):
@@ -138,6 +138,13 @@ class RouteAnalysisTests(unittest.TestCase):
 
     def test_commute_cache_version_matches_current_metric_schema(self):
         self.assertEqual(COMMUTES_CACHE_VERSION, 4)
+        self.assertEqual(WORKOUTS_CACHE_VERSION, 3)
+
+    def test_vertical_rate_uses_moving_time(self):
+        self.assertEqual(vertical_rate(100, 1800), 200.0)
+        self.assertEqual(vertical_rate(0, 1800), 0.0)
+        self.assertIsNone(vertical_rate(100, 0))
+        self.assertIsNone(vertical_rate("invalid", 1800))
 
     def test_repeated_routes_are_divided_into_supported_geographic_segments(self):
         def track(offset, seconds_per_point):

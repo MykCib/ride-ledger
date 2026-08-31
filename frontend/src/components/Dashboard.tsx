@@ -3,10 +3,10 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { getCommutes, getInsights, getRoutes, getSegments, getWorkouts, renameCommuteLocation } from '../api';
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
-import { formatClock, formatDuration, formatSpeed, formatTime, formatWorkoutTitle } from '../format';
+import { formatClock, formatDuration, formatSpeed, formatTime, formatVerticalRate, formatWorkoutTitle } from '../format';
 import type { CommuteAnalysis, Insights, RouteAssignment, RouteOverlay, SegmentAnalysis, TrackPoint, WorkoutDetail, WorkoutSummary } from '../types';
 import { AllRoutesMap, RouteMap } from './Maps';
-import { SegmentChart, SpeedChart, WeeklyChart } from './Charts';
+import { ElevationChart, SegmentChart, SpeedChart, WeeklyChart } from './Charts';
 import { CommuteSection } from './Commutes';
 import { SegmentsSection } from './Segments';
 
@@ -133,6 +133,8 @@ function DetailStats({ ride }: { ride: WorkoutDetail }) {
     ['Top speed', formatSpeed(ride.max_speed_kmh)],
     ['Ascent', `${ride.ascent_m ?? '—'} m`],
     ['Descent', `${ride.descent_m ?? '—'} m`],
+    ['Climbing rate', formatVerticalRate(ride.climbing_rate_mph)],
+    ['Descent rate', formatVerticalRate(ride.descent_rate_mph)],
     ['Calories', ride.calories ?? '—'],
   ];
   if (ride.weather) {
@@ -194,9 +196,10 @@ function DetailPanel({ selectedId, ride, loading, error, assignment }: { selecte
       <div className="detail-view">
         {isLoadingNewRide && <div className="detail-loading" aria-live="polite">Loading workout...</div>}
         <div className="detail-head"><div><p>WORKOUT{assignment && <> · <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>{assignment.group_id && <span className="detail-route-label">{assignment.label}</span>}</>}</p><h2>{fullDate}</h2></div><div className="ride-distance">{(ride.distance_km || 0).toFixed(2)} km</div></div>
-        <RouteMap track={ride.track} highlightedPoint={highlightedPoint} />
-        <div className="speed-chart"><div className="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div className="chart-wrap"><SpeedChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
-        <DetailStats ride={ride} />
+         <RouteMap track={ride.track} highlightedPoint={highlightedPoint} />
+         <div className="speed-chart"><div className="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div className="chart-wrap"><SpeedChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
+         <div className="elevation-chart"><div className="section-head"><h2>Elevation profile</h2><span>METRES · ROUTE PROGRESS</span></div><div className="chart-wrap"><ElevationChart track={ride.track} /></div></div>
+         <DetailStats ride={ride} />
         <StopList ride={ride} />
         <p className="route-note">{ride.points.toLocaleString()} GPS points · {ride.temperature_c ?? '—'}°C computer temperature · {ride.weather ? 'Historical weather from Open-Meteo' : 'Weather data is being collected for this ride'} · {ride.file}</p>
       </div>
