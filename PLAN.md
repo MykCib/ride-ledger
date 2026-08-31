@@ -19,6 +19,7 @@
 - Activity patterns include timezone-aware weekday and departure-hour distributions plus a riding calendar heatmap.
 - Ride details support animated track playback with a position slider, live speed and altitude, and existing start/finish markers.
 - Each ride reports data-quality warnings for GPS gaps, invalid points, speed spikes, long stops, incomplete recordings, and suspicious distance values, with an original FIT download.
+- The archive supports date, weekday, direction, distance, and text filters, sortable workout lists, and overlay/density route-map layers.
 - Available data includes GPS, speed, altitude, distance, temperature, and timestamps.
 - Heart-rate and cadence values are currently zero and should not be used.
 
@@ -82,9 +83,9 @@
 - [x] Display altitude while playing back a ride.
 - [ ] Display weather conditions while playing back a ride.
 - [x] Add route start and finish markers.
-- [ ] Add a combined route-density map.
-- [ ] Highlight roads used most often.
-- [ ] Add selectable map layers.
+- [x] Add a combined route-density map.
+- [x] Highlight roads used most often.
+- [x] Add selectable map layers.
 
 ## Phase 6: Data Quality
 
@@ -100,13 +101,13 @@
 
 ## Phase 7: Dashboard Improvements
 
-- [ ] Add filters by date range.
-- [ ] Add filters by weekday.
-- [ ] Add filters by route direction.
-- [ ] Add filters by distance.
+- [x] Add filters by date range.
+- [x] Add filters by weekday.
+- [x] Add filters by route direction.
+- [x] Add filters by distance.
 - [ ] Add filters by weather.
-- [ ] Add sorting by speed, distance, duration, or date.
-- [ ] Add a search field.
+- [x] Add sorting by speed, distance, duration, or date.
+- [x] Add a search field.
 - [ ] Add monthly and yearly summaries.
 - [ ] Add personal records summary.
 - [ ] Add recent-workout highlights.
@@ -123,7 +124,7 @@
 7. [x] Calendar and weekday analysis.
 8. [x] Animated route playback.
 9. [x] Data-quality checks.
-10. [ ] Advanced map layers and filters.
+10. [x] Advanced map layers and filters.
 
 ## Data Limitations
 

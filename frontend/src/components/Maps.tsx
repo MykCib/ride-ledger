@@ -109,7 +109,7 @@ export function RouteMap({ track, highlightedPoint, playbackPoint = null }: Rout
   return <div ref={containerRef} className="map" />;
 }
 
-export function AllRoutesMap({ routes }: { routes: RouteOverlay[] }) {
+export function AllRoutesMap({ routes, mode = 'overlay' }: { routes: RouteOverlay[]; mode?: 'overlay' | 'density' }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layersRef = useRef<L.Polyline[]>([]);
@@ -135,13 +135,19 @@ export function AllRoutesMap({ routes }: { routes: RouteOverlay[] }) {
     const bounds = L.latLngBounds([]);
     routes.forEach((routeData) => {
       if (!routeData.points.length) return;
-      const layer = L.polyline(routeData.points, { color: '#d45b3f', weight: 3, opacity: 0.42, lineCap: 'round', lineJoin: 'round' }).addTo(map);
+      const layer = L.polyline(routeData.points, {
+        color: mode === 'density' ? '#4d6b38' : '#d45b3f',
+        weight: mode === 'density' ? 6 : 3,
+        opacity: mode === 'density' ? 0.12 : 0.42,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map);
       layersRef.current.push(layer);
       bounds.extend(layer.getBounds());
     });
     map.invalidateSize({ pan: false });
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [24, 24] });
-  }, [routes]);
+  }, [mode, routes]);
 
   return <div id="all-map" ref={containerRef} className="all-map" />;
 }

@@ -4,7 +4,7 @@ import { getCommutes, getInsights, getRoutes, getSegments, getWeather, getWorkou
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
 import { formatClock, formatDuration, formatSpeed, formatTime, formatVerticalRate, formatWorkoutTitle } from '../format';
-import type { CommuteAnalysis, Insights, RouteAssignment, RouteOverlay, SegmentAnalysis, TrackPoint, WeatherAnalysis, WeatherSummary, WorkoutDetail, WorkoutSummary } from '../types';
+import type { CommuteAnalysis, Insights, RouteAssignment, RouteDirection, RouteOverlay, SegmentAnalysis, TrackPoint, WeatherAnalysis, WeatherSummary, WorkoutDetail, WorkoutSummary } from '../types';
 import { AllRoutesMap, RouteMap } from './Maps';
 import { ElevationChart, SegmentChart, SpeedChart, WeeklyChart } from './Charts';
 import { CommuteSection } from './Commutes';
@@ -55,12 +55,19 @@ function Stats({ rides }: { rides: WorkoutSummary[] }) {
   return <section className="stats">{values.map(([label, value]) => <div className="stat" key={label}><div className="stat-label">{label}</div><div className="stat-value">{value}</div></div>)}</section>;
 }
 
+type RouteMapLayer = 'overlay' | 'density';
+
 function AllRoutesSection({ routes }: { routes: RouteOverlay[] }) {
+  const [layer, setLayer] = useState<RouteMapLayer>('overlay');
   return (
     <section className="all-routes">
-      <div className="section-head"><h2>All routes</h2><span>OVERLAY · EVERY WORKOUT</span></div>
-      <AllRoutesMap routes={routes} />
-      <p className="chart-note">Repeated roads become darker as rides overlap.</p>
+      <div className="section-head"><h2>All routes</h2><span>{layer === 'density' ? 'DENSITY · OVERLAPPING ROADS' : 'OVERLAY · EVERY WORKOUT'}</span></div>
+      <div className="map-layer-toggle" role="group" aria-label="Route map layer">
+        <button type="button" className={layer === 'overlay' ? 'active' : ''} aria-pressed={layer === 'overlay'} onClick={() => setLayer('overlay')}>All routes</button>
+        <button type="button" className={layer === 'density' ? 'active' : ''} aria-pressed={layer === 'density'} onClick={() => setLayer('density')}>Density</button>
+      </div>
+      <AllRoutesMap routes={routes} mode={layer} />
+      <p className="chart-note">Translucent strokes compound where rides overlap; density mode makes frequently used roads easier to spot.</p>
     </section>
   );
 }
@@ -88,12 +95,85 @@ function InsightsSection({ insights }: { insights: Insights | null }) {
   );
 }
 
-function RideList({ rides, selectedId, assignments }: { rides: WorkoutSummary[]; selectedId: string | undefined; assignments: Record<string, RouteAssignment> }) {
+interface RideFilters {
+  search: string;
+  from: string;
+  to: string;
+  weekday: string;
+  direction: 'all' | RouteDirection;
+  minDistance: string;
+  maxDistance: string;
+  sort: 'date' | 'speed' | 'distance' | 'duration';
+}
+
+const defaultRideFilters: RideFilters = {
+  search: '',
+  from: '',
+  to: '',
+  weekday: 'all',
+  direction: 'all',
+  minDistance: '',
+  maxDistance: '',
+  sort: 'date',
+};
+
+function filterRides(rides: WorkoutSummary[], filters: RideFilters, assignments: Record<string, RouteAssignment>): WorkoutSummary[] {
+  const search = filters.search.trim().toLowerCase();
+  const filtered = rides.filter((ride) => {
+    const assignment = assignments[ride.id];
+    const haystack = [ride.id, ride.file, ride.date, assignment?.label, assignment?.direction].join(' ').toLowerCase();
+    if (search && !haystack.includes(search)) return false;
+    const date = ride.date?.slice(0, 10) ?? '';
+    if (filters.from && (!date || date < filters.from)) return false;
+    if (filters.to && (!date || date > filters.to)) return false;
+    if (filters.weekday !== 'all' && ride.date && new Date(ride.date).getDay() !== Number(filters.weekday)) return false;
+    if (filters.weekday !== 'all' && !ride.date) return false;
+    if (filters.direction !== 'all' && assignment?.direction !== filters.direction) return false;
+    const distance = ride.distance_km;
+    const minimum = filters.minDistance === '' ? null : Number(filters.minDistance);
+    const maximum = filters.maxDistance === '' ? null : Number(filters.maxDistance);
+    if (minimum != null && (distance == null || distance < minimum)) return false;
+    if (maximum != null && (distance == null || distance > maximum)) return false;
+    return true;
+  });
+  return [...filtered].sort((first, second) => {
+    const values = {
+      date: (ride: WorkoutSummary) => ride.date ? Date.parse(ride.date) : -Infinity,
+      speed: (ride: WorkoutSummary) => ride.average_speed_kmh ?? -Infinity,
+      distance: (ride: WorkoutSummary) => ride.distance_km ?? -Infinity,
+      duration: (ride: WorkoutSummary) => ride.moving_seconds ?? -Infinity,
+    };
+    return values[filters.sort](second) - values[filters.sort](first);
+  });
+}
+
+function RideFilters({ filters, dates, directions, onChange, onReset }: { filters: RideFilters; dates: string[]; directions: RouteDirection[]; onChange: (next: RideFilters) => void; onReset: () => void }) {
+  const update = <K extends keyof RideFilters>(field: K, value: RideFilters[K]) => onChange({ ...filters, [field]: value });
+  const active = Object.entries(filters).some(([field, value]) => field === 'sort' ? value !== 'date' : value !== '' && value !== 'all');
+  return (
+    <div className="ride-filters">
+      <div className="filter-grid">
+        <label className="filter-field filter-search">Search<input type="search" value={filters.search} onChange={(event) => update('search', event.currentTarget.value)} placeholder="Date, file, or route" /></label>
+        <label className="filter-field">From<input type="date" min={dates[0]} max={dates[dates.length - 1]} value={filters.from} onChange={(event) => update('from', event.currentTarget.value)} /></label>
+        <label className="filter-field">To<input type="date" min={dates[0]} max={dates[dates.length - 1]} value={filters.to} onChange={(event) => update('to', event.currentTarget.value)} /></label>
+        <label className="filter-field">Weekday<select value={filters.weekday} onChange={(event) => update('weekday', event.currentTarget.value)}><option value="all">All days</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></label>
+        <label className="filter-field">Direction<select value={filters.direction} onChange={(event) => update('direction', event.currentTarget.value as RideFilters['direction'])}><option value="all">All directions</option>{directions.map((direction) => <option value={direction} key={direction}>{direction}</option>)}</select></label>
+        <label className="filter-field">Min km<input type="number" min="0" step="0.1" value={filters.minDistance} onChange={(event) => update('minDistance', event.currentTarget.value)} /></label>
+        <label className="filter-field">Max km<input type="number" min="0" step="0.1" value={filters.maxDistance} onChange={(event) => update('maxDistance', event.currentTarget.value)} /></label>
+        <label className="filter-field">Sort<select value={filters.sort} onChange={(event) => update('sort', event.currentTarget.value as RideFilters['sort'])}><option value="date">Newest first</option><option value="speed">Fastest first</option><option value="distance">Longest first</option><option value="duration">Most moving time</option></select></label>
+        <button type="button" className="filter-reset" onClick={onReset} disabled={!active}>Reset</button>
+      </div>
+    </div>
+  );
+}
+
+function RideList({ rides, totalRides, selectedId, assignments, filters, allDates, directions, onFiltersChange, onFiltersReset }: { rides: WorkoutSummary[]; totalRides: number; selectedId: string | undefined; assignments: Record<string, RouteAssignment>; filters: RideFilters; allDates: string[]; directions: RouteDirection[]; onFiltersChange: (filters: RideFilters) => void; onFiltersReset: () => void }) {
   return (
     <div className="ride-list-wrap">
-      <div className="section-head"><h2>Workouts</h2><span>{rides.length} FILES</span></div>
+      <div className="section-head"><h2>Workouts</h2><span>{rides.length}/{totalRides} FILES</span></div>
+      <RideFilters filters={filters} dates={allDates} directions={directions} onChange={onFiltersChange} onReset={onFiltersReset} />
       <div className="ride-list">
-        {rides.map((ride) => {
+        {rides.length ? rides.map((ride) => {
           const date = ride.date ? new Date(ride.date) : null;
           const assignment = assignments[ride.id];
           return (
@@ -117,7 +197,7 @@ function RideList({ rides, selectedId, assignments }: { rides: WorkoutSummary[];
               <div className="ride-distance">{(ride.distance_km || 0).toFixed(1)}<small> km</small></div>
             </Link>
           );
-        })}
+        }) : <p className="ride-empty">No workouts match these filters.</p>}
       </div>
     </div>
   );
@@ -310,6 +390,7 @@ export function DashboardPage() {
   const [segments, setSegments] = useState<SegmentAnalysis | null>(null);
   const [weather, setWeather] = useState<WeatherAnalysis | null>(null);
   const [overviewError, setOverviewError] = useState<Error | null>(null);
+  const [filters, setFilters] = useState<RideFilters>(defaultRideFilters);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -394,6 +475,12 @@ export function DashboardPage() {
     }
   };
   const selectedAssignment = selectedId ? commutes?.assignments[selectedId] : undefined;
+  const assignments = commutes?.assignments ?? emptyAssignments;
+  const visibleRides = filterRides(rides, filters, assignments);
+  const visibleRideIds = new Set(visibleRides.map((ride) => ride.id));
+  const visibleRoutes = routes.filter((route) => visibleRideIds.has(route.id));
+  const allDates = [...new Set(rides.flatMap((ride) => ride.date ? [ride.date.slice(0, 10)] : []))].sort();
+  const directions = [...new Set(Object.values(assignments).map((assignment) => assignment.direction))];
 
   return (
     <>
@@ -401,17 +488,17 @@ export function DashboardPage() {
       <main className="shell">
         <Intro />
         {loadError ? <p className="route-note">{loadError.message}</p> : <>
-          <Stats rides={rides} />
-          <AllRoutesSection routes={routes} />
+          <Stats rides={visibleRides} />
+          <AllRoutesSection routes={visibleRoutes} />
           <CommuteSection timezone={commutes?.timezone ?? 'UTC'} groups={commutes?.groups ?? []} routes={routes} locations={commutes?.locations ?? []} onRename={handleRenameLocation} />
           <SegmentsSection segmentCount={segments?.segment_count ?? 0} segments={segments?.segments ?? []} />
           <WeatherSection analysis={weather} />
-          <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={rides} /></div></div></section>
+          <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={visibleRides} /></div></div></section>
           <InsightsSection insights={insights} />
           <ActivitySection insights={insights} />
           {overviewError && <p className="route-note">{overviewError.message}</p>}
           <section className="content-grid">
-            <RideList rides={rides} selectedId={selectedId} assignments={commutes?.assignments ?? emptyAssignments} />
+            <RideList rides={visibleRides} totalRides={rides.length} selectedId={selectedId} assignments={assignments} filters={filters} allDates={allDates} directions={directions} onFiltersChange={setFilters} onFiltersReset={() => setFilters(defaultRideFilters)} />
             <DetailPanel selectedId={selectedId} ride={detailState.data} loading={detailState.loading} error={detailState.error} assignment={selectedAssignment} />
           </section>
         </>}
