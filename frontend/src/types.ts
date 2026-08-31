@@ -106,6 +106,11 @@ export interface RouteSegment {
   ride_count: number;
   total_rides: number;
   coverage_percent: number | null;
+  performance_count: number;
+  average_time_seconds: number | null;
+  average_speed_kmh: number | null;
+  fastest_time_seconds: number | null;
+  record_ride_id: string | null;
 }
 
 export interface SegmentAnalysis {

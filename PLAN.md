@@ -13,6 +13,7 @@
 - Repeated routes are stacked on a grouped map, with endpoint labels persisted by coordinate and editable across all routes.
 - Commute cards include median departure and arrival times, average duration, distance variation, and direction-specific performance.
 - Repeated directions are normalized into ten geographic segments with ride coverage and segment lengths.
+- Segment rows include average speed, average elapsed time, and the fastest observed time with its record ride.
 - Available data includes GPS, speed, altitude, distance, temperature, and timestamps.
 - Heart-rate and cadence values are currently zero and should not be used.
 
@@ -46,10 +47,10 @@
 
 - [x] Divide repeated routes into geographic segments.
 - [x] Detect frequently repeated road sections.
-- [ ] Calculate average speed per segment.
-- [ ] Track fastest time through each segment.
-- [ ] Show segment personal records.
-- [ ] Show number of rides through each segment.
+- [x] Calculate average speed per segment.
+- [x] Track fastest time through each segment.
+- [x] Show segment personal records.
+- [x] Show number of rides through each segment.
 - [ ] Compare segment performance by direction.
 - [ ] Color route lines by speed.
 - [ ] Color route lines by elevation.
@@ -111,7 +112,7 @@
 1. [x] Stop detection and moving-versus-elapsed-time analysis.
 2. [x] Automatic outbound and return route grouping.
 3. [x] Repeated route segment detection.
-4. [ ] Personal-best segment tracking.
+4. [x] Personal-best segment tracking.
 5. [ ] Elevation profile and climbing statistics.
 6. [ ] Weather-versus-performance analysis.
 7. [ ] Calendar and weekday analysis.

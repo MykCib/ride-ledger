@@ -1,3 +1,4 @@
+import { formatDuration, formatSpeed } from '../format';
 import type { RouteSegment } from '../types';
 
 interface SegmentGroup {
@@ -42,7 +43,7 @@ export function SegmentsSection({ segmentCount, segments }: { segmentCount: numb
   return (
     <section className="segments">
       <div className="section-head"><h2>Repeated route segments</h2><span>{groups.length} DIRECTIONS</span></div>
-      <p className="chart-note segment-note">Repeated directions are normalized into {segmentCount} equal-distance sections. Each row shows the geographic span and how many rides support it.</p>
+      <p className="chart-note segment-note">Repeated directions are normalized into {segmentCount} equal-distance sections. Each row shows the geographic span, average speed, fastest observed time, and ride coverage.</p>
       <div className="segment-groups">
         {groups.map((group) => (
           <article className="segment-card" key={group.key}>
@@ -50,7 +51,7 @@ export function SegmentsSection({ segmentCount, segments }: { segmentCount: numb
               <div><p className="eyebrow">REPEATED SECTION</p><h3>{group.label}</h3></div>
               <span className={`direction-tag ${group.direction}`}>{group.direction} · {group.totalRides} RIDES</span>
             </div>
-            <div className="segment-table-head"><span /><span>PROGRESS</span><span>LENGTH</span><span>RIDES</span></div>
+            <div className="segment-table-head"><span /><span>PROGRESS</span><span>LENGTH</span><span>AVG / BEST</span><span>RIDES</span></div>
             <div className="segment-rows">
               {group.segments.map((segment) => (
                 <div className="segment-row" key={segment.id}>
@@ -60,6 +61,7 @@ export function SegmentsSection({ segmentCount, segments }: { segmentCount: numb
                     <div className="segment-bar"><i style={{ width: `${segment.coverage_percent ?? 0}%` }} /></div>
                   </div>
                   <span className="segment-distance">{distance(segment.distance_km)}</span>
+                  <span className="segment-performance" title={segment.record_ride_id ? `Record: ${segment.record_ride_id}` : undefined}><b>{formatSpeed(segment.average_speed_kmh)}</b><small>BEST {formatDuration(segment.fastest_time_seconds)}</small></span>
                   <b className="segment-rides">{segment.ride_count}/{segment.total_rides}</b>
                 </div>
               ))}

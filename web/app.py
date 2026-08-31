@@ -29,7 +29,7 @@ _detail_cache = {}
 _routes_lock = Lock()
 WORKOUTS_CACHE_VERSION = 2
 COMMUTES_CACHE_VERSION = 4
-SEGMENTS_CACHE_VERSION = 1
+SEGMENTS_CACHE_VERSION = 2
 LOCATION_NAMES_PATH = DATA / "location_names.json"
 DEFAULT_ANALYTICS_TIMEZONE = "Europe/Vilnius"
 STOP_SPEED_MPS = 0.5
@@ -421,12 +421,17 @@ def track_progress(track):
                 distance = float(distance)
             except (TypeError, ValueError):
                 distance = None
-            records.append(([latitude, longitude], distance if distance is not None and isfinite(distance) else None))
-    points = [record[0] for record in records]
+            timestamp = as_utc(point.get("t"))
+            records.append({
+                "point": [latitude, longitude],
+                "distance": distance if distance is not None and isfinite(distance) else None,
+                "timestamp": timestamp if isinstance(timestamp, datetime) else None,
+            })
+    points = [record["point"] for record in records]
     if len(points) < 2:
         return [], 0
 
-    raw_distances = [record[1] for record in records]
+    raw_distances = [record["distance"] for record in records]
     valid_raw = all(value is not None for value in raw_distances)
     valid_raw = valid_raw and all(second >= first for first, second in zip(raw_distances, raw_distances[1:]))
     if valid_raw and raw_distances[-1] > raw_distances[0]:
@@ -436,23 +441,35 @@ def track_progress(track):
         cumulative = [0.0]
         for previous, current in zip(points, points[1:]):
             cumulative.append(cumulative[-1] + distance_meters(previous, current))
-    return list(zip(points, cumulative)), cumulative[-1]
+    return [
+        {"point": record["point"], "distance": distance, "timestamp": record["timestamp"]}
+        for record, distance in zip(records, cumulative)
+    ], cumulative[-1]
 
 
-def interpolate_track_point(progress, target):
-    if target <= progress[0][1]:
-        return progress[0][0]
-    for index, (_, current_distance) in enumerate(progress[1:], 1):
+def interpolate_track_sample(progress, target):
+    if target <= progress[0]["distance"]:
+        return {"point": progress[0]["point"], "timestamp": progress[0]["timestamp"]}
+    for index, current in enumerate(progress[1:], 1):
+        current_distance = current["distance"]
         if target <= current_distance:
-            previous_point, previous_distance = progress[index - 1]
-            current_point, _ = progress[index]
+            previous = progress[index - 1]
+            previous_point = previous["point"]
+            previous_distance = previous["distance"]
+            current_point = current["point"]
             span = current_distance - previous_distance
             ratio = (target - previous_distance) / span if span else 0
-            return [
-                previous_point[0] + (current_point[0] - previous_point[0]) * ratio,
-                previous_point[1] + (current_point[1] - previous_point[1]) * ratio,
-            ]
-    return progress[-1][0]
+            timestamp = None
+            if previous["timestamp"] is not None and current["timestamp"] is not None:
+                timestamp = previous["timestamp"] + (current["timestamp"] - previous["timestamp"]) * ratio
+            return {
+                "point": [
+                    previous_point[0] + (current_point[0] - previous_point[0]) * ratio,
+                    previous_point[1] + (current_point[1] - previous_point[1]) * ratio,
+                ],
+                "timestamp": timestamp,
+            }
+    return {"point": progress[-1]["point"], "timestamp": progress[-1]["timestamp"]}
 
 
 def resample_route(track, segment_count=ROUTE_SEGMENT_COUNT):
@@ -460,7 +477,7 @@ def resample_route(track, segment_count=ROUTE_SEGMENT_COUNT):
     if not progress or total_distance <= 0:
         return None
     samples = [
-        interpolate_track_point(progress, total_distance * index / segment_count)
+        interpolate_track_sample(progress, total_distance * index / segment_count)
         for index in range(segment_count + 1)
     ]
     return samples, total_distance
@@ -478,12 +495,12 @@ def build_route_segments(groups, tracks):
             for ride_id in ride_ids:
                 sampled = resample_route(tracks.get(ride_id, []))
                 if sampled is not None:
-                    sampled_routes.append(sampled)
+                    sampled_routes.append({"ride_id": ride_id, "samples": sampled[0], "total_distance": sampled[1]})
             if len(sampled_routes) < 2:
                 continue
             for index in range(ROUTE_SEGMENT_COUNT):
-                starts = [sampled[0][index] for sampled in sampled_routes]
-                ends = [sampled[0][index + 1] for sampled in sampled_routes]
+                starts = [sampled["samples"][index]["point"] for sampled in sampled_routes]
+                ends = [sampled["samples"][index + 1]["point"] for sampled in sampled_routes]
                 average_start = [
                     sum(point[axis] for point in starts) / len(starts)
                     for axis in (0, 1)
@@ -492,7 +509,21 @@ def build_route_segments(groups, tracks):
                     sum(point[axis] for point in ends) / len(ends)
                     for axis in (0, 1)
                 ]
-                average_distance = sum(sampled[1] for sampled in sampled_routes) / len(sampled_routes)
+                average_distance = sum(sampled["total_distance"] for sampled in sampled_routes) / len(sampled_routes)
+                segment_performances = []
+                for sampled in sampled_routes:
+                    start_time = sampled["samples"][index]["timestamp"]
+                    end_time = sampled["samples"][index + 1]["timestamp"]
+                    if start_time is None or end_time is None or end_time <= start_time:
+                        continue
+                    duration = (end_time - start_time).total_seconds()
+                    distance_km = sampled["total_distance"] / ROUTE_SEGMENT_COUNT / 1000
+                    segment_performances.append({
+                        "ride_id": sampled["ride_id"],
+                        "duration": duration,
+                        "speed": distance_km / duration * 3600 if duration else None,
+                    })
+                fastest = min(segment_performances, key=lambda performance: performance["duration"], default=None)
                 segments.append({
                     "id": f"{group['id']}-{direction}-{index + 1}",
                     "group_id": group["id"],
@@ -507,6 +538,17 @@ def build_route_segments(groups, tracks):
                     "ride_count": len(sampled_routes),
                     "total_rides": len(ride_ids),
                     "coverage_percent": number(len(sampled_routes) / len(ride_ids) * 100, 1),
+                    "performance_count": len(segment_performances),
+                    "average_time_seconds": number(
+                        sum(performance["duration"] for performance in segment_performances) / len(segment_performances),
+                        0,
+                    ) if segment_performances else None,
+                    "average_speed_kmh": number(
+                        sum(performance["speed"] for performance in segment_performances) / len(segment_performances),
+                        1,
+                    ) if segment_performances else None,
+                    "fastest_time_seconds": number(fastest["duration"], 0) if fastest else None,
+                    "record_ride_id": fastest["ride_id"] if fastest else None,
                 })
     return {"segment_count": ROUTE_SEGMENT_COUNT, "segments": segments}
 
