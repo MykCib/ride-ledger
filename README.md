@@ -42,6 +42,26 @@ Stop it with `systemctl --user disable --now xoss-watcher.service`.
 
 ## Workout Website
 
+The dashboard frontend is a TypeScript React application. Build its static
+assets after installing the Node dependencies and whenever the frontend source
+changes:
+
+```sh
+npm install
+npm run typecheck
+npm run build
+```
+
+The Flask service serves the generated files from `web/static/dist/`. During
+frontend development, run the API on port 8124 and the Vite server separately:
+
+```sh
+.venv/bin/python -m flask --app web.app run --host 0.0.0.0 --port 8124
+npm run dev
+```
+
+The Vite development server proxies `/api` requests to Flask.
+
 Start the dashboard directly during development:
 
 ```sh

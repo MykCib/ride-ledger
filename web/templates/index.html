@@ -1,44 +1,16 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ride Ledger</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-  <header class="topbar">
-    <div class="brand"><span class="brand-mark">R</span><span>RIDE LEDGER</span></div>
-    <div class="top-meta"><span class="live-dot"></span><span id="last-updated">Loading rides</span><button id="refresh">Refresh</button></div>
-  </header>
-  <main class="shell">
-    <section class="intro">
-      <div><p class="eyebrow">PERSONAL ROUTE ARCHIVE</p><h1>Every ride,<br><em>mapped.</em></h1></div>
-      <p class="intro-copy">A quiet record of the roads between here and there. Select a ride to inspect the route, pace, and numbers.</p>
-    </section>
-    <section class="stats" id="stats"></section>
-    <section class="all-routes"><div class="section-head"><h2>All routes</h2><span>OVERLAY · EVERY WORKOUT</span></div><div id="all-map" class="all-map"></div><p class="chart-note">Repeated roads become darker as rides overlap.</p></section>
-    <section class="overview-charts"><div class="chart-card"><div class="section-head"><h2>Distance by week</h2><span>KM</span></div><div class="chart-wrap"><canvas id="weekly-chart"></canvas></div></div></section>
-    <section class="insights"><div class="chart-card"><div class="section-head"><h2>Route segments</h2><span>AVERAGE SPEED · ROUTE PROGRESS</span></div><div class="chart-wrap"><canvas id="segment-chart"></canvas></div><p class="chart-note">Each ride is split into ten equal distance segments. This shows where your repeated route tends to slow down or open up.</p></div><div class="insight-card" id="insight-card"></div></section>
-    <section class="content-grid">
-      <div class="ride-list-wrap"><div class="section-head"><h2>Workouts</h2><span id="ride-count"></span></div><div id="ride-list" class="ride-list"></div></div>
-      <aside class="detail" id="detail">
-        <div class="empty-state" id="empty-detail"><span class="empty-icon">+</span><h2>Select a workout</h2><p>Your route and ride details will appear here.</p></div>
-        <div id="detail-content" hidden>
-          <div class="detail-head"><div><p>WORKOUT</p><h2 id="detail-date"></h2></div><div id="detail-distance" class="ride-distance"></div></div>
-          <div id="map" class="map"></div>
-          <div class="speed-chart"><div class="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div class="chart-wrap"><canvas id="speed-chart"></canvas></div></div>
-          <div id="detail-stats" class="detail-grid"></div>
-          <p id="route-note" class="route-note"></p>
-        </div>
-      </aside>
-    </section>
-  </main>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/chart.umd.min.js"></script>
-  <script src="/static/app.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ride Ledger</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link rel="stylesheet" href="/static/dist/app.css">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/static/dist/app.js"></script>
+  </body>
 </html>

@@ -113,6 +113,18 @@ def index():
     return render_template("index.html")
 
 
+@app.get("/rides/<workout_id>")
+def ride_page(workout_id):
+    return render_template("index.html")
+
+
+@app.get("/<path:frontend_path>")
+def frontend_route(frontend_path):
+    if frontend_path in {"api", "static"} or frontend_path.startswith(("api/", "static/")):
+        return jsonify({"error": "Not found"}), 404
+    return render_template("index.html")
+
+
 @app.get("/api/workouts")
 def workout_list():
     items = workouts()
