@@ -120,6 +120,49 @@ export interface SegmentAnalysis {
   segments: RouteSegment[];
 }
 
+export interface WeatherBin {
+  label: string;
+  average_speed_kmh: number | null;
+  ride_count: number;
+}
+
+export interface WeatherConditionStats {
+  count: number;
+  average_speed_kmh: number | null;
+  average_temperature_c: number | null;
+  average_wind_kmh: number | null;
+  average_precipitation_mm: number | null;
+}
+
+export interface FastestWeatherRide {
+  ride_id: string;
+  date: string | null;
+  speed_kmh: number;
+  temperature_c: number | null;
+  wind_kmh: number | null;
+  precipitation_mm: number | null;
+}
+
+export interface WeatherDirectionComparison {
+  group_id: string;
+  label: string;
+  outbound: WeatherConditionStats;
+  return: WeatherConditionStats;
+}
+
+export interface WeatherAnalysis {
+  total_rides: number;
+  available_rides: number;
+  temperature_bins: WeatherBin[];
+  wind_bins: WeatherBin[];
+  conditions: {
+    dry: WeatherConditionStats;
+    wet: WeatherConditionStats;
+  };
+  fastest: FastestWeatherRide | null;
+  directions: WeatherDirectionComparison[];
+}
+
 export interface CommuteAnalysis {
   timezone: string;
   groups: RouteGroup[];

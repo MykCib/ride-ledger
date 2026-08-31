@@ -1,4 +1,4 @@
-import type { CommuteAnalysis, Insights, RouteOverlay, SegmentAnalysis, WorkoutDetail, WorkoutSummary } from './types';
+import type { CommuteAnalysis, Insights, RouteOverlay, SegmentAnalysis, WeatherAnalysis, WorkoutDetail, WorkoutSummary } from './types';
 
 async function request<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { signal });
@@ -24,6 +24,10 @@ export async function getCommutes(signal?: AbortSignal): Promise<CommuteAnalysis
 
 export async function getSegments(signal?: AbortSignal): Promise<SegmentAnalysis> {
   return request('/api/segments', signal);
+}
+
+export async function getWeather(signal?: AbortSignal): Promise<WeatherAnalysis> {
+  return request('/api/weather', signal);
 }
 
 export async function renameCommuteLocation(locationId: string, name: string): Promise<CommuteAnalysis> {

@@ -15,6 +15,7 @@
 - Repeated directions are normalized into ten geographic segments with ride coverage and segment lengths.
 - Segment rows include average speed, average elapsed time, and the fastest observed time with its record ride.
 - Ride details include elevation profiles plus climbing and descent rates based on moving time.
+- Weather analysis compares speed against temperature and wind, dry versus wet rides, fastest-ride conditions, and route directions.
 - Available data includes GPS, speed, altitude, distance, temperature, and timestamps.
 - Heart-rate and cadence values are currently zero and should not be used.
 
@@ -59,14 +60,14 @@
 
 ## Phase 4: Weather Analysis
 
-- [ ] Compare speed against temperature.
-- [ ] Compare speed against wind speed.
-- [ ] Compare rides in rain versus dry conditions.
+- [x] Compare speed against temperature.
+- [x] Compare speed against wind speed.
+- [x] Compare rides in rain versus dry conditions.
 - [ ] Estimate headwind and tailwind based on route direction.
 - [ ] Show weather conditions along the route.
 - [ ] Display weather markers on the route map.
-- [ ] Identify weather conditions associated with fastest rides.
-- [ ] Compare outbound and return weather differences.
+- [x] Identify weather conditions associated with fastest rides.
+- [x] Compare outbound and return weather differences.
 - [x] Cache all weather responses locally.
 
 ## Phase 5: Map Features
@@ -115,7 +116,7 @@
 3. [x] Repeated route segment detection.
 4. [x] Personal-best segment tracking.
 5. [x] Elevation profile and climbing statistics.
-6. [ ] Weather-versus-performance analysis.
+6. [x] Weather-versus-performance analysis.
 7. [ ] Calendar and weekday analysis.
 8. [ ] Animated route playback.
 9. [ ] Data-quality checks.
@@ -126,5 +127,6 @@
 - Heart-rate data is unavailable or zero in the current files.
 - Cadence data is unavailable or zero in the current files.
 - Historical weather is estimated from route locations and hourly weather records.
+- Wind direction is not currently cached, so headwind and tailwind analysis remains pending.
 - Older rides are not currently stored on the XOSS device.
 - Segment detection will be more reliable after more rides are collected.

@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { getCommutes, getInsights, getRoutes, getSegments, getWorkouts, renameCommuteLocation } from '../api';
+import { getCommutes, getInsights, getRoutes, getSegments, getWeather, getWorkouts, renameCommuteLocation } from '../api';
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
 import { formatClock, formatDuration, formatSpeed, formatTime, formatVerticalRate, formatWorkoutTitle } from '../format';
-import type { CommuteAnalysis, Insights, RouteAssignment, RouteOverlay, SegmentAnalysis, TrackPoint, WorkoutDetail, WorkoutSummary } from '../types';
+import type { CommuteAnalysis, Insights, RouteAssignment, RouteOverlay, SegmentAnalysis, TrackPoint, WeatherAnalysis, WorkoutDetail, WorkoutSummary } from '../types';
 import { AllRoutesMap, RouteMap } from './Maps';
 import { ElevationChart, SegmentChart, SpeedChart, WeeklyChart } from './Charts';
 import { CommuteSection } from './Commutes';
 import { SegmentsSection } from './Segments';
+import { WeatherSection } from './Weather';
 
 const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const emptyAssignments: Record<string, RouteAssignment> = {};
@@ -220,6 +221,7 @@ export function DashboardPage() {
   const [insights, setInsights] = useState<Insights | null>(null);
   const [commutes, setCommutes] = useState<CommuteAnalysis | null>(null);
   const [segments, setSegments] = useState<SegmentAnalysis | null>(null);
+  const [weather, setWeather] = useState<WeatherAnalysis | null>(null);
   const [overviewError, setOverviewError] = useState<Error | null>(null);
 
   useEffect(() => {
@@ -253,8 +255,8 @@ export function DashboardPage() {
     const controller = new AbortController();
     let active = true;
     setOverviewError(null);
-    Promise.allSettled([getRoutes(controller.signal), getInsights(controller.signal), getCommutes(controller.signal), getSegments(controller.signal)])
-      .then(([routeResult, insightResult, commuteResult, segmentResult]) => {
+    Promise.allSettled([getRoutes(controller.signal), getInsights(controller.signal), getCommutes(controller.signal), getSegments(controller.signal), getWeather(controller.signal)])
+      .then(([routeResult, insightResult, commuteResult, segmentResult, weatherResult]) => {
         if (!active) return;
         overviewVersion.current = refreshKey;
         const errors: string[] = [];
@@ -266,6 +268,8 @@ export function DashboardPage() {
         else errors.push(`Route directions: ${commuteResult.reason instanceof Error ? commuteResult.reason.message : 'request failed'}`);
         if (segmentResult.status === 'fulfilled') setSegments(segmentResult.value);
         else errors.push(`Route segments: ${segmentResult.reason instanceof Error ? segmentResult.reason.message : 'request failed'}`);
+        if (weatherResult.status === 'fulfilled') setWeather(weatherResult.value);
+        else errors.push(`Weather analysis: ${weatherResult.reason instanceof Error ? weatherResult.reason.message : 'request failed'}`);
         if (errors.length) setOverviewError(new Error(errors.join(' · ')));
       });
     return () => {
@@ -290,6 +294,13 @@ export function DashboardPage() {
           label: nextCommutes.groups.find((group) => group.id === segment.group_id)?.label ?? segment.label,
         })),
       } : current);
+      setWeather((current) => current ? {
+        ...current,
+        directions: current.directions.map((direction) => ({
+          ...direction,
+          label: nextCommutes.groups.find((group) => group.id === direction.group_id)?.label ?? direction.label,
+        })),
+      } : current);
     } catch (error: unknown) {
       setOverviewError(error instanceof Error ? error : new Error('Could not rename location'));
       throw error;
@@ -307,6 +318,7 @@ export function DashboardPage() {
           <AllRoutesSection routes={routes} />
           <CommuteSection timezone={commutes?.timezone ?? 'UTC'} groups={commutes?.groups ?? []} routes={routes} locations={commutes?.locations ?? []} onRename={handleRenameLocation} />
           <SegmentsSection segmentCount={segments?.segment_count ?? 0} segments={segments?.segments ?? []} />
+          <WeatherSection analysis={weather} />
           <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={rides} /></div></div></section>
           <InsightsSection insights={insights} />
           {overviewError && <p className="route-note">{overviewError.message}</p>}

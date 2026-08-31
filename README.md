@@ -76,6 +76,9 @@ in the stacked route map; names are stored locally by coordinate.
 Commute times use `Europe/Vilnius` by default; set `RIDE_LEDGER_TIMEZONE` to an
 IANA timezone to override it.
 
+The dashboard also compares average speed with historical temperature, wind, and
+precipitation, including dry-versus-wet and outbound-versus-return summaries.
+
 Start the dashboard directly during development:
 
 ```sh

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import json
-from math import atan2, cos, isfinite, radians, sin, sqrt
+from math import atan2, cos, floor, isfinite, radians, sin, sqrt
 import os
 from pathlib import Path
 from threading import Lock
@@ -25,11 +25,14 @@ _commutes_cache = None
 _commutes_signature = None
 _segments_cache = None
 _segments_signature = None
+_weather_analysis_cache = None
+_weather_analysis_signature = None
 _detail_cache = {}
 _routes_lock = Lock()
 WORKOUTS_CACHE_VERSION = 3
 COMMUTES_CACHE_VERSION = 4
 SEGMENTS_CACHE_VERSION = 2
+WEATHER_ANALYSIS_CACHE_VERSION = 1
 LOCATION_NAMES_PATH = DATA / "location_names.json"
 DEFAULT_ANALYTICS_TIMEZONE = "Europe/Vilnius"
 STOP_SPEED_MPS = 0.5
@@ -48,6 +51,16 @@ def degrees(value):
 
 def number(value, digits=1):
     return round(float(value), digits) if value is not None else None
+
+
+def finite_number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if isfinite(value) else None
 
 
 def vertical_rate(elevation, moving):
@@ -230,27 +243,15 @@ def item_datetime(item):
 
 
 def elapsed_seconds(item):
-    value = item.get("elapsed_seconds")
-    if isinstance(value, bool):
-        return None
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return None
-    return value if isfinite(value) and value >= 0 else None
+    value = finite_number(item.get("elapsed_seconds"))
+    return value if value is not None and value >= 0 else None
 
 
 def numeric_values(items, field):
     values = []
     for item in items:
-        value = item.get(field)
-        if isinstance(value, bool):
-            continue
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            continue
-        if isfinite(value):
+        value = finite_number(item.get(field))
+        if value is not None:
             values.append(value)
     return values
 
@@ -562,6 +563,125 @@ def build_route_segments(groups, tracks):
                     "record_ride_id": fastest["ride_id"] if fastest else None,
                 })
     return {"segment_count": ROUTE_SEGMENT_COUNT, "segments": segments}
+
+
+def weather_records(items):
+    records = []
+    for item in items:
+        weather_path = DATA / "weather_cache" / f"{item.get('id')}.json"
+        if not weather_path.is_file():
+            continue
+        try:
+            payload = json.loads(weather_path.read_text())
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        weather = {
+            field: value
+            for field in ("temperature_c", "wind_kmh", "precipitation_mm", "weather_code")
+            if (value := finite_number(payload.get(field))) is not None
+        }
+        if not weather:
+            continue
+        records.append({
+            "id": item.get("id"),
+            "date": item.get("date"),
+            "speed_kmh": finite_number(item.get("average_speed_kmh")),
+            "weather": weather,
+        })
+    return records
+
+
+def average_record_value(records, field):
+    values = [value for record in records if (value := finite_number(record.get(field))) is not None]
+    return number(sum(values) / len(values), 1) if values else None
+
+
+def average_weather_value(records, field):
+    values = [
+        value
+        for record in records
+        if (value := finite_number(record["weather"].get(field))) is not None
+    ]
+    return number(sum(values) / len(values), 1) if values else None
+
+
+def weather_stats(records):
+    return {
+        "count": len(records),
+        "average_speed_kmh": average_record_value(records, "speed_kmh"),
+        "average_temperature_c": average_weather_value(records, "temperature_c"),
+        "average_wind_kmh": average_weather_value(records, "wind_kmh"),
+        "average_precipitation_mm": average_weather_value(records, "precipitation_mm"),
+    }
+
+
+def weather_bins(records, field, width, suffix):
+    buckets = {}
+    for record in records:
+        value = finite_number(record["weather"].get(field))
+        if value is None:
+            continue
+        start = floor(value / width) * width
+        buckets.setdefault(start, []).append(record)
+    result = []
+    for start in sorted(buckets):
+        end = start + width
+        result.append({
+            "label": f"{start:g}-{end:g}{suffix}",
+            "average_speed_kmh": average_record_value(buckets[start], "speed_kmh"),
+            "ride_count": len(buckets[start]),
+        })
+    return result
+
+
+def build_weather_analysis(items, commute):
+    records = weather_records(items)
+    by_id = {record["id"]: record for record in records}
+    dry = [record for record in records if record["weather"].get("precipitation_mm") == 0]
+    wet = [record for record in records if (record["weather"].get("precipitation_mm") or 0) > 0]
+    fastest_record = max(
+        (record for record in records if record["speed_kmh"] is not None),
+        key=lambda record: record["speed_kmh"],
+        default=None,
+    )
+    fastest = None
+    if fastest_record:
+        fastest = {
+            "ride_id": fastest_record["id"],
+            "date": fastest_record["date"],
+            "speed_kmh": fastest_record["speed_kmh"],
+            "temperature_c": fastest_record["weather"].get("temperature_c"),
+            "wind_kmh": fastest_record["weather"].get("wind_kmh"),
+            "precipitation_mm": fastest_record["weather"].get("precipitation_mm"),
+        }
+
+    directions = []
+    for group in commute["groups"]:
+        direction_stats = {}
+        for direction in ("outbound", "return"):
+            direction_stats[direction] = weather_stats([
+                by_id[ride_id]
+                for ride_id in group[direction]["ride_ids"]
+                if ride_id in by_id
+            ])
+        directions.append({
+            "group_id": group["id"],
+            "label": group["label"],
+            "outbound": direction_stats["outbound"],
+            "return": direction_stats["return"],
+        })
+
+    return {
+        "total_rides": len(items),
+        "available_rides": len(records),
+        "temperature_bins": weather_bins(records, "temperature_c", 5, " C"),
+        "wind_bins": weather_bins(records, "wind_kmh", 5, " km/h"),
+        "conditions": {"dry": weather_stats(dry), "wet": weather_stats(wet)},
+        "fastest": fastest,
+        "directions": directions,
+    }
 
 
 def detect_stops(samples, session_start=None, elapsed_seconds=None):
@@ -964,6 +1084,38 @@ def segment_analysis_data():
 @app.get("/api/segments")
 def route_segments():
     return jsonify(segment_analysis_data())
+
+
+def weather_analysis_data():
+    global _weather_analysis_cache, _weather_analysis_signature
+    paths = sorted(DATA.glob("*.fit"), reverse=True)
+    signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
+    weather_paths = sorted((DATA / "weather_cache").glob("*.json")) if (DATA / "weather_cache").is_dir() else []
+    signature += tuple((f"weather/{path.name}", path.stat().st_size, path.stat().st_mtime_ns) for path in weather_paths)
+    if LOCATION_NAMES_PATH.is_file():
+        signature += ((LOCATION_NAMES_PATH.name, LOCATION_NAMES_PATH.stat().st_size, LOCATION_NAMES_PATH.stat().st_mtime_ns),)
+    if _weather_analysis_cache is not None and signature == _weather_analysis_signature:
+        return _weather_analysis_cache
+    cache_path = DATA / "weather_analysis_cache.json"
+    if cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text())
+            if cached.get("version") == WEATHER_ANALYSIS_CACHE_VERSION and tuple(tuple(item) for item in cached["signature"]) == signature:
+                _weather_analysis_signature = signature
+                _weather_analysis_cache = cached["weather"]
+                return _weather_analysis_cache
+        except (KeyError, ValueError, OSError, json.JSONDecodeError):
+            pass
+    items = workouts()
+    _weather_analysis_cache = build_weather_analysis(items, commute_analysis_data())
+    _weather_analysis_signature = signature
+    cache_path.write_text(json.dumps({"version": WEATHER_ANALYSIS_CACHE_VERSION, "signature": signature, "weather": _weather_analysis_cache}))
+    return _weather_analysis_cache
+
+
+@app.get("/api/weather")
+def weather_analysis():
+    return jsonify(weather_analysis_data())
 
 
 @app.put("/api/commutes/locations/<location_id>")

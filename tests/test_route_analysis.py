@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from web.app import COMMUTES_CACHE_VERSION, WORKOUTS_CACHE_VERSION, build_commute_analysis, build_route_segments, route_performance, vertical_rate
+from web.app import COMMUTES_CACHE_VERSION, WORKOUTS_CACHE_VERSION, build_commute_analysis, build_route_segments, build_weather_analysis, route_performance, vertical_rate
 
 
 def ride(ride_id, date, distance=5.0, speed=20.0):
@@ -145,6 +145,42 @@ class RouteAnalysisTests(unittest.TestCase):
         self.assertEqual(vertical_rate(0, 1800), 0.0)
         self.assertIsNone(vertical_rate(100, 0))
         self.assertIsNone(vertical_rate("invalid", 1800))
+
+    def test_weather_analysis_compares_conditions_and_route_directions(self):
+        items = [
+            ride("fast", "2026-08-31T08:00:00+00:00", speed=30.0),
+            ride("dry", "2026-08-30T08:00:00+00:00", speed=25.0),
+            ride("wet", "2026-08-29T17:00:00+00:00", speed=20.0),
+        ]
+        weather = {
+            "fast": {"temperature_c": 20, "wind_kmh": 10, "precipitation_mm": 0},
+            "dry": {"temperature_c": 22, "wind_kmh": 5, "precipitation_mm": 0},
+            "wet": {"temperature_c": 15, "wind_kmh": 15, "precipitation_mm": 1},
+        }
+        commute = {
+            "groups": [{
+                "id": "route-1-2",
+                "label": "A <-> B",
+                "outbound": {"ride_ids": ["fast", "dry"]},
+                "return": {"ride_ids": ["wet"]},
+            }],
+        }
+        with TemporaryDirectory() as directory:
+            data = Path(directory)
+            (data / "weather_cache").mkdir()
+            for ride_id, values in weather.items():
+                (data / "weather_cache" / f"{ride_id}.json").write_text(json.dumps(values))
+            with patch("web.app.DATA", data):
+                result = build_weather_analysis(items, commute)
+
+        self.assertEqual(result["available_rides"], 3)
+        self.assertEqual(result["conditions"]["dry"]["count"], 2)
+        self.assertEqual(result["conditions"]["dry"]["average_speed_kmh"], 27.5)
+        self.assertEqual(result["conditions"]["wet"]["count"], 1)
+        self.assertEqual(result["fastest"]["ride_id"], "fast")
+        self.assertEqual(result["directions"][0]["outbound"]["count"], 2)
+        self.assertEqual(result["directions"][0]["return"]["average_speed_kmh"], 20.0)
+        self.assertEqual(result["temperature_bins"][0]["label"], "15-20 C")
 
     def test_repeated_routes_are_divided_into_supported_geographic_segments(self):
         def track(offset, seconds_per_point):
