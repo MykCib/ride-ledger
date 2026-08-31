@@ -1,6 +1,13 @@
 import unittest
+import json
+import os
+from datetime import timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
-from web.app import build_commute_analysis
+from web.app import COMMUTES_CACHE_VERSION, build_commute_analysis, route_performance
 
 
 def ride(ride_id, date, distance=5.0, speed=20.0):
@@ -49,6 +56,106 @@ class RouteAnalysisTests(unittest.TestCase):
         self.assertEqual(result["groups"][0]["outbound"]["count"], 1)
         self.assertEqual(result["groups"][0]["return"]["count"], 0)
         self.assertEqual(result["assignments"]["one-way"]["direction"], "outbound")
+        self.assertIsNone(result["groups"][0]["return"]["typical_departure_time"])
+        self.assertIsNone(result["groups"][0]["return"]["typical_arrival_time"])
+        self.assertIsNone(result["groups"][0]["return"]["average_commute_seconds"])
+        self.assertIsNone(result["groups"][0]["return"]["distance_variation_km"])
+
+    def test_route_performance_includes_typical_times_and_distance_variation(self):
+        routes = [
+            {"id": "morning-1", "points": [[54.7000, 25.2100], [54.7100, 25.2900]]},
+            {"id": "morning-2", "points": [[54.7001, 25.2101], [54.7101, 25.2901]]},
+            {"id": "morning-3", "points": [[54.7002, 25.2102], [54.7102, 25.2902]]},
+        ]
+        items = [
+            ride("morning-1", "2026-08-31T08:00:00+00:00", distance=5.0),
+            ride("morning-2", "2026-08-30T08:30:00+00:00", distance=7.0),
+            ride("morning-3", "2026-08-29T09:00:00+00:00", distance=7.0),
+        ]
+        items[0]["elapsed_seconds"] = 1800
+        items[1]["elapsed_seconds"] = 2400
+        items[2]["elapsed_seconds"] = 3000
+
+        with patch.dict(os.environ, {"RIDE_LEDGER_TIMEZONE": "UTC"}):
+            result = build_commute_analysis(items, routes)
+        performance = result["groups"][0]["outbound"]
+
+        self.assertEqual(result["timezone"], "UTC")
+        self.assertEqual(performance["typical_departure_time"], "08:30")
+        self.assertEqual(performance["typical_arrival_time"], "09:10")
+        self.assertEqual(performance["average_commute_seconds"], 2400.0)
+        self.assertEqual(performance["distance_variation_km"], 0.94)
+
+    def test_route_performance_uses_elapsed_time_and_excludes_invalid_values(self):
+        items = [
+            ride("zero", "2026-01-01T23:55:00+00:00", distance=5.0),
+            ride("no-date", None, distance=None),
+            ride("negative", "2026-01-01T00:05:00+00:00", distance=7.0),
+            ride("invalid", "2026-01-01T00:10:00+00:00", distance=None),
+        ]
+        items[0]["elapsed_seconds"] = 0
+        items[0]["moving_seconds"] = 900
+        items[1]["elapsed_seconds"] = 60
+        items[2]["elapsed_seconds"] = -1
+        items[3]["elapsed_seconds"] = "not-a-number"
+
+        performance = route_performance(items, timezone.utc)
+
+        self.assertEqual(performance["average_commute_seconds"], 30.0)
+        self.assertEqual(performance["average_elapsed_seconds"], 30.0)
+        self.assertEqual(performance["typical_departure_time"], "00:05")
+        self.assertEqual(performance["typical_arrival_time"], "23:55")
+        self.assertEqual(performance["distance_variation_km"], 1.0)
+
+    def test_typical_times_use_circular_median_and_handle_midnight_rollover(self):
+        items = [
+            ride("late", "2026-01-01T23:55:00+00:00"),
+            ride("early", "2026-01-02T00:05:00+00:00"),
+            ride("early-2", "2026-01-02T00:10:00+00:00"),
+        ]
+        for item in items:
+            item["elapsed_seconds"] = 0
+
+        performance = route_performance(items, timezone.utc)
+
+        self.assertEqual(performance["typical_departure_time"], "00:05")
+        self.assertEqual(performance["typical_arrival_time"], "00:05")
+
+        rollover = route_performance([{
+            **ride("rollover", "2026-01-01T23:55:00+00:00"),
+            "elapsed_seconds": 600,
+        }], timezone.utc)
+        self.assertEqual(rollover["typical_arrival_time"], "00:05")
+
+    def test_typical_times_convert_instants_before_calculating_local_time(self):
+        performance = route_performance([{
+            **ride("dst", "2026-03-29T00:30:00+00:00"),
+            "elapsed_seconds": 3600,
+        }], ZoneInfo("Europe/Vilnius"))
+
+        self.assertEqual(performance["typical_departure_time"], "02:30")
+        self.assertEqual(performance["typical_arrival_time"], "04:30")
+
+    def test_commute_cache_version_matches_current_metric_schema(self):
+        self.assertEqual(COMMUTES_CACHE_VERSION, 4)
+
+    def test_saved_location_name_is_applied_to_group_and_assignment(self):
+        routes = [
+            {"id": "outbound", "points": [[54.7000, 25.2100], [54.7100, 25.2900]]},
+            {"id": "return", "points": [[54.7100, 25.2900], [54.7000, 25.2100]]},
+        ]
+        items = [
+            ride("outbound", "2026-08-31T08:00:00+00:00"),
+            ride("return", "2026-08-31T17:00:00+00:00"),
+        ]
+        with TemporaryDirectory() as directory:
+            names_path = Path(directory) / "location_names.json"
+            names_path.write_text(json.dumps({"locations": [{"lat": 54.7001, "lon": 25.2101, "name": "Home"}]}))
+            with patch("web.app.LOCATION_NAMES_PATH", names_path):
+                result = build_commute_analysis(items, routes)
+
+        self.assertIn("Home", result["groups"][0]["label"])
+        self.assertTrue(any("Home" in assignment["label"] for assignment in result["assignments"].values()))
 
 
 if __name__ == "__main__":

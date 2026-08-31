@@ -65,7 +65,11 @@ export interface RouteLocation {
 export interface RoutePerformance {
   count: number;
   ride_ids: string[];
+  typical_departure_time: string | null;
+  typical_arrival_time: string | null;
+  average_commute_seconds: number | null;
   average_distance_km: number | null;
+  distance_variation_km: number | null;
   average_speed_kmh: number | null;
   average_moving_seconds: number | null;
   average_elapsed_seconds: number | null;
@@ -89,8 +93,10 @@ export interface RouteAssignment {
 }
 
 export interface CommuteAnalysis {
+  timezone: string;
   groups: RouteGroup[];
   assignments: Record<string, RouteAssignment>;
+  locations: RouteLocation[];
 }
 
 export interface Insights {

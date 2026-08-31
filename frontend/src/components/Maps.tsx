@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import L from 'leaflet';
-import type { RouteCoordinate, RouteOverlay, TrackPoint } from '../types';
+import type { RouteCoordinate, RouteGroup, RouteLocation, RouteOverlay, TrackPoint } from '../types';
 
 const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 const tileOptions = { attribution: '© OpenStreetMap contributors' };
@@ -119,4 +119,131 @@ export function AllRoutesMap({ routes }: { routes: RouteOverlay[] }) {
   }, [routes]);
 
   return <div id="all-map" ref={containerRef} className="all-map" />;
+}
+
+const commuteColors = ['#4d6b38', '#d45b3f', '#5a78a0', '#8a6e9c', '#b68c3a'];
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] || character);
+}
+
+function locationIcon(label: string): L.DivIcon {
+  return L.divIcon({
+    className: 'location-marker',
+    html: `<span>${escapeHtml(label)}</span>`,
+    iconSize: [36, 28],
+    iconAnchor: [18, 14],
+  });
+}
+
+function locationPopup(location: RouteLocation, marker: L.Marker, rename: (name: string) => Promise<void>): HTMLFormElement {
+  const form = document.createElement('form');
+  form.className = 'location-popup';
+  const label = document.createElement('label');
+  label.textContent = 'Point name';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = location.label;
+  input.maxLength = 60;
+  input.placeholder = 'e.g. Home';
+  input.setAttribute('aria-label', 'Point name');
+  const actions = document.createElement('div');
+  actions.className = 'location-popup-actions';
+  const save = document.createElement('button');
+  save.type = 'submit';
+  save.textContent = 'Save';
+  const status = document.createElement('span');
+  status.className = 'location-popup-status';
+  actions.append(save, status);
+  form.append(label, input, actions);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    save.disabled = true;
+    status.textContent = 'Saving...';
+    rename(input.value.trim())
+      .then(() => {
+        status.textContent = 'Saved';
+        marker.closePopup();
+      })
+      .catch((error: unknown) => {
+        status.textContent = error instanceof Error ? error.message : 'Could not save';
+        save.disabled = false;
+      });
+  });
+  return form;
+}
+
+interface CommuteRoutesMapProps {
+  routes: RouteOverlay[];
+  groups: RouteGroup[];
+  locations: RouteLocation[];
+  onRename: (locationId: string, name: string) => Promise<void>;
+}
+
+export function CommuteRoutesMap({ routes, groups, locations, onRename }: CommuteRoutesMapProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const layersRef = useRef<L.Polyline[]>([]);
+  const markersRef = useRef<L.Marker[]>([]);
+  const renameRef = useRef(onRename);
+
+  useEffect(() => {
+    renameRef.current = onRename;
+  }, [onRename]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const map = L.map(containerRef.current, { zoomControl: false }).setView([0, 0], 13);
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    L.tileLayer(tileUrl, tileOptions).addTo(map);
+    mapRef.current = map;
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      layersRef.current = [];
+      markersRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    layersRef.current.forEach((layer) => map.removeLayer(layer));
+    layersRef.current = [];
+    const colors = new Map<string, string>();
+    groups.forEach((group, groupIndex) => {
+      const color = commuteColors[groupIndex % commuteColors.length];
+      group.outbound.ride_ids.forEach((rideId) => colors.set(rideId, color));
+      group.return.ride_ids.forEach((rideId) => colors.set(rideId, color));
+    });
+    const bounds = L.latLngBounds([]);
+    routes.forEach((routeData) => {
+      if (!routeData.points.length) return;
+      const layer = L.polyline(routeData.points, {
+        color: colors.get(routeData.id) || '#7c8981',
+        weight: 3,
+        opacity: colors.has(routeData.id) ? 0.28 : 0.2,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map);
+      layersRef.current.push(layer);
+      bounds.extend(layer.getBounds());
+    });
+    map.invalidateSize({ pan: false });
+    if (bounds.isValid()) map.fitBounds(bounds, { padding: [24, 24] });
+  }, [groups, routes]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    markersRef.current.forEach((marker) => map.removeLayer(marker));
+    markersRef.current = [];
+    locations.forEach((location) => {
+      const marker = L.marker([location.lat, location.lon], { icon: locationIcon(location.label) }).addTo(map);
+      marker.bindPopup(locationPopup(location, marker, (name) => renameRef.current(location.id, name)));
+      markersRef.current.push(marker);
+    });
+  }, [locations]);
+
+  return <div ref={containerRef} className="commute-map" />;
 }

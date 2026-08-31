@@ -21,6 +21,11 @@ export function formatClock(value: string | null): string {
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+export function formatClockTime(value: string | null): string {
+  if (!value) return '—';
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value) ? value : '—';
+}
+
 export function formatSpeed(value: number | null): string {
   return value == null ? '—' : `${value.toFixed(1)} km/h`;
 }

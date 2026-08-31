@@ -1,9 +1,12 @@
 from datetime import datetime, timedelta, timezone
 import json
-from math import atan2, cos, radians, sin, sqrt
+from math import atan2, cos, isfinite, radians, sin, sqrt
+import os
 from pathlib import Path
+from threading import Lock
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 from fitparse import FitFile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,14 +22,18 @@ _routes_signature = None
 _commutes_cache = None
 _commutes_signature = None
 _detail_cache = {}
+_routes_lock = Lock()
 WORKOUTS_CACHE_VERSION = 2
-COMMUTES_CACHE_VERSION = 1
+COMMUTES_CACHE_VERSION = 4
+LOCATION_NAMES_PATH = DATA / "location_names.json"
+DEFAULT_ANALYTICS_TIMEZONE = "Europe/Vilnius"
 STOP_SPEED_MPS = 0.5
 MIN_STOP_SECONDS = 5
 DISTANCE_TOLERANCE_M = 1.0
 MAX_STOP_DISTANCE_M = 5.0
 RECORD_INTERVAL_SECONDS = 1
 ENDPOINT_CLUSTER_RADIUS_M = 500
+DAY_SECONDS = 24 * 60 * 60
 
 
 def degrees(value):
@@ -71,6 +78,64 @@ def location_label(index):
         value, remainder = divmod(value - 1, 26)
         label = chr(65 + remainder) + label
     return label
+
+
+def saved_location_names():
+    if not LOCATION_NAMES_PATH.is_file():
+        return []
+    try:
+        payload = json.loads(LOCATION_NAMES_PATH.read_text())
+        entries = payload.get("locations", []) if isinstance(payload, dict) else []
+        if not isinstance(entries, list):
+            return []
+        return [
+            entry for entry in entries
+            if isinstance(entry, dict)
+            and isinstance(entry.get("lat"), (int, float))
+            and isinstance(entry.get("lon"), (int, float))
+            and isinstance(entry.get("name"), str)
+            and entry["name"].strip()
+        ]
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def apply_location_names(locations):
+    entries = saved_location_names()
+    for location in locations.values():
+        point = (location["lat"], location["lon"])
+        saved = next(
+            (entry for entry in entries if distance_meters(point, (entry["lat"], entry["lon"])) <= ENDPOINT_CLUSTER_RADIUS_M),
+            None,
+        )
+        if saved:
+            location["label"] = saved["name"].strip()
+
+
+def update_location_name(location_id, name):
+    locations, _ = cluster_route_endpoints(route_overlay_data())
+    location = next((item for item in locations.values() if item["id"] == location_id), None)
+    if location is None:
+        return None
+
+    entries = saved_location_names()
+    matching = next(
+        (entry for entry in entries if distance_meters((location["lat"], location["lon"]), (entry["lat"], entry["lon"])) <= ENDPOINT_CLUSTER_RADIUS_M),
+        None,
+    )
+    if name:
+        if matching:
+            matching["lat"] = location["lat"]
+            matching["lon"] = location["lon"]
+            matching["name"] = name
+        else:
+            entries.append({"lat": location["lat"], "lon": location["lon"], "name": name})
+    elif matching:
+        entries.remove(matching)
+
+    LOCATION_NAMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LOCATION_NAMES_PATH.write_text(json.dumps({"locations": entries}, indent=2) + "\n")
+    return location
 
 
 def cluster_route_endpoints(routes):
@@ -124,35 +189,151 @@ def median_value(values):
     return (values[middle - 1] + values[middle]) / 2
 
 
-def departure_minute(item):
-    if not item.get("date"):
+def analytics_timezone():
+    configured = os.environ.get("RIDE_LEDGER_TIMEZONE", DEFAULT_ANALYTICS_TIMEZONE).strip()
+    if not configured:
+        configured = "UTC"
+    try:
+        return configured, ZoneInfo(configured)
+    except ZoneInfoNotFoundError:
+        app.logger.warning("Unknown RIDE_LEDGER_TIMEZONE %r; using UTC", configured)
+        return "UTC", timezone.utc
+
+
+def item_datetime(item):
+    value = item.get("date")
+    if isinstance(value, datetime):
+        return as_utc(value)
+    if not isinstance(value, str):
         return None
     try:
-        value = datetime.fromisoformat(item["date"])
+        return as_utc(datetime.fromisoformat(value))
     except ValueError:
         return None
-    return value.hour * 60 + value.minute + value.second / 60
+
+
+def elapsed_seconds(item):
+    value = item.get("elapsed_seconds")
+    if isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if isfinite(value) and value >= 0 else None
+
+
+def numeric_values(items, field):
+    values = []
+    for item in items:
+        value = item.get(field)
+        if isinstance(value, bool):
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if isfinite(value):
+            values.append(value)
+    return values
+
+
+def circular_median(values, period=DAY_SECONDS):
+    values = sorted(value % period for value in values)
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+
+    gaps = [
+        (values[(index + 1) % len(values)] - values[index]) % period
+        for index in range(len(values))
+    ]
+    largest_gap = max(range(len(gaps)), key=gaps.__getitem__)
+    start = (largest_gap + 1) % len(values)
+    ordered = values[start:] + values[:start]
+    unwrapped = [ordered[0]]
+    offset = 0
+    for previous, value in zip(ordered, ordered[1:]):
+        if value < previous:
+            offset += period
+        unwrapped.append(value + offset)
+    return median_value(unwrapped) % period
+
+
+def clock_seconds(value, timezone_value):
+    value = value.astimezone(timezone_value)
+    return value.hour * 60 * 60 + value.minute * 60 + value.second + value.microsecond / 1_000_000
+
+
+def typical_time(items, timezone_value, arrival=False):
+    values = []
+    for item in items:
+        value = item_datetime(item)
+        if value is None:
+            continue
+        if arrival:
+            elapsed = elapsed_seconds(item)
+            if elapsed is None:
+                continue
+            value += timedelta(seconds=float(elapsed))
+        values.append(clock_seconds(value, timezone_value))
+    if not values:
+        return None
+
+    typical_second = circular_median(values)
+    typical_minute = int(typical_second / 60 + 0.5) % (24 * 60)
+    return f"{typical_minute // 60:02d}:{typical_minute % 60:02d}"
+
+
+def distance_variation(items):
+    values = numeric_values(items, "distance_km")
+    if not values:
+        return None
+    average = sum(values) / len(values)
+    return number(sqrt(sum((value - average) ** 2 for value in values) / len(values)), 2)
+
+
+def departure_seconds(item, timezone_value):
+    value = item_datetime(item)
+    if value is None:
+        return None
+    return clock_seconds(value, timezone_value)
 
 
 def average_value(items, field, digits=1):
-    values = [item.get(field) for item in items if item.get(field) is not None]
+    values = numeric_values(items, field)
     return number(sum(values) / len(values), digits) if values else None
 
 
-def route_performance(items):
+def average_elapsed(items):
+    values = [value for item in items if (value := elapsed_seconds(item)) is not None]
+    return number(sum(values) / len(values), 0) if values else None
+
+
+def route_performance(items, timezone_value=None):
+    if timezone_value is None:
+        _, timezone_value = analytics_timezone()
+    average_elapsed_seconds = average_elapsed(items)
     return {
         "count": len(items),
         "ride_ids": [item["id"] for item in items],
+        "typical_departure_time": typical_time(items, timezone_value),
+        "typical_arrival_time": typical_time(items, timezone_value, arrival=True),
+        "average_commute_seconds": average_elapsed_seconds,
         "average_distance_km": average_value(items, "distance_km", 2),
+        "distance_variation_km": distance_variation(items),
         "average_speed_kmh": average_value(items, "average_speed_kmh", 1),
         "average_moving_seconds": average_value(items, "moving_seconds", 0),
-        "average_elapsed_seconds": average_value(items, "elapsed_seconds", 0),
+        "average_elapsed_seconds": average_elapsed_seconds,
         "average_stopped_seconds": average_value(items, "estimated_stopped_seconds", 0),
     }
 
 
 def build_commute_analysis(items, routes):
+    timezone_name, timezone_value = analytics_timezone()
     locations, route_locations = cluster_route_endpoints(routes)
+    apply_location_names(locations)
     items_by_id = {item["id"]: item for item in items}
     grouped = {}
     assignments = {}
@@ -177,12 +358,12 @@ def build_commute_analysis(items, routes):
     for (first_location, second_location), directions in sorted(grouped.items()):
         forward = directions["forward"]
         reverse = directions["reverse"]
-        forward_departures = [departure_minute(item) for item in forward]
-        reverse_departures = [departure_minute(item) for item in reverse]
+        forward_departures = [departure_seconds(item, timezone_value) for item in forward]
+        reverse_departures = [departure_seconds(item, timezone_value) for item in reverse]
         forward_departures = [value for value in forward_departures if value is not None]
         reverse_departures = [value for value in reverse_departures if value is not None]
         if forward and reverse and forward_departures and reverse_departures:
-            outbound_is_forward = median_value(forward_departures) <= median_value(reverse_departures)
+            outbound_is_forward = circular_median(forward_departures) <= circular_median(reverse_departures)
         elif len(forward) != len(reverse):
             outbound_is_forward = len(forward) > len(reverse)
         else:
@@ -201,8 +382,8 @@ def build_commute_analysis(items, routes):
             "origin": origin,
             "destination": destination,
             "total_rides": len(outbound_items) + len(return_items),
-            "outbound": route_performance(outbound_items),
-            "return": route_performance(return_items),
+            "outbound": route_performance(outbound_items, timezone_value),
+            "return": route_performance(return_items, timezone_value),
         }
         groups.append(group)
         outbound_label = f"{origin['label']} -> {destination['label']}"
@@ -212,7 +393,12 @@ def build_commute_analysis(items, routes):
         for item in return_items:
             assignments[item["id"]] = {"group_id": group_id, "direction": "return", "label": return_label}
 
-    return {"groups": groups, "assignments": assignments}
+    return {
+        "timezone": timezone_name,
+        "groups": groups,
+        "assignments": assignments,
+        "locations": list(locations.values()),
+    }
 
 
 def detect_stops(samples, session_start=None, elapsed_seconds=None):
@@ -487,6 +673,11 @@ def workout_detail(workout_id):
 
 
 def route_overlay_data():
+    with _routes_lock:
+        return _route_overlay_data()
+
+
+def _route_overlay_data():
     global _routes_cache, _routes_signature
     paths = sorted(DATA.glob("*.fit"), reverse=True)
     signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
@@ -523,8 +714,12 @@ def route_overlay():
 
 def commute_analysis_data():
     global _commutes_cache, _commutes_signature
+    timezone_name, _ = analytics_timezone()
     paths = sorted(DATA.glob("*.fit"), reverse=True)
     signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
+    if LOCATION_NAMES_PATH.is_file():
+        signature += ((LOCATION_NAMES_PATH.name, LOCATION_NAMES_PATH.stat().st_size, LOCATION_NAMES_PATH.stat().st_mtime_ns),)
+    signature += (("timezone", timezone_name),)
     if _commutes_cache is not None and signature == _commutes_signature:
         return _commutes_cache
     cache_path = DATA / "commutes_cache.json"
@@ -545,6 +740,31 @@ def commute_analysis_data():
 
 @app.get("/api/commutes")
 def commute_analysis():
+    return jsonify(commute_analysis_data())
+
+
+@app.put("/api/commutes/locations/<location_id>")
+def rename_commute_location(location_id):
+    global _commutes_cache, _commutes_signature
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Request body must be an object"}), 400
+    name = payload.get("name")
+    if not isinstance(name, str):
+        return jsonify({"error": "Location name must be a string"}), 400
+    name = name.strip()
+    if len(name) > 60:
+        return jsonify({"error": "Location name must be 60 characters or fewer"}), 400
+    location = update_location_name(location_id, name)
+    if location is None:
+        return jsonify({"error": "Location not found"}), 404
+    _commutes_cache = None
+    _commutes_signature = None
+    cache_path = DATA / "commutes_cache.json"
+    try:
+        cache_path.unlink()
+    except FileNotFoundError:
+        pass
     return jsonify(commute_analysis_data())
 
 

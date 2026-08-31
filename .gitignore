@@ -12,6 +12,7 @@ data/*.fit
 data/workouts.json
 data/*_cache.json
 data/weather_cache/
+data/location_names.json
 
 # Local tooling and editor files
 .DS_Store

@@ -69,9 +69,12 @@ inferred from unchanged-distance timestamp gaps and sustained speeds at or
 below 0.5 m/s, with intervals shorter than five seconds ignored.
 
 Repeated rides are grouped by endpoints within 500 metres. The direction with
-the earlier typical departure is labelled outbound and the reverse direction
-return; endpoint labels are anonymous because no place metadata is stored in
-the FIT files.
+the earlier typical departure is labelled outbound and the reverse direction return.
+Route cards show median departure and arrival times, average elapsed commute
+duration, and distance spread. Endpoint labels start anonymous and can be renamed
+in the stacked route map; names are stored locally by coordinate.
+Commute times use `Europe/Vilnius` by default; set `RIDE_LEDGER_TIMEZONE` to an
+IANA timezone to override it.
 
 Start the dashboard directly during development:
 

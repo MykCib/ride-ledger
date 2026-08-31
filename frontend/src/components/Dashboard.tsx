@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { getCommutes, getInsights, getRoutes, getWorkouts } from '../api';
+import { getCommutes, getInsights, getRoutes, getWorkouts, renameCommuteLocation } from '../api';
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
 import { formatClock, formatDuration, formatSpeed, formatTime, formatWorkoutTitle } from '../format';
@@ -272,6 +272,14 @@ export function DashboardPage() {
     clearDetailCache();
     setRefreshKey((value) => value + 1);
   };
+  const handleRenameLocation = async (locationId: string, name: string) => {
+    try {
+      setCommutes(await renameCommuteLocation(locationId, name));
+    } catch (error: unknown) {
+      setOverviewError(error instanceof Error ? error : new Error('Could not rename location'));
+      throw error;
+    }
+  };
   const selectedAssignment = selectedId ? commutes?.assignments[selectedId] : undefined;
 
   return (
@@ -282,7 +290,7 @@ export function DashboardPage() {
         {loadError ? <p className="route-note">{loadError.message}</p> : <>
           <Stats rides={rides} />
           <AllRoutesSection routes={routes} />
-          <CommuteSection groups={commutes?.groups ?? []} />
+          <CommuteSection timezone={commutes?.timezone ?? 'UTC'} groups={commutes?.groups ?? []} routes={routes} locations={commutes?.locations ?? []} onRename={handleRenameLocation} />
           <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={rides} /></div></div></section>
           <InsightsSection insights={insights} />
           {overviewError && <p className="route-note">{overviewError.message}</p>}

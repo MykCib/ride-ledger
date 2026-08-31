@@ -22,6 +22,16 @@ export async function getCommutes(signal?: AbortSignal): Promise<CommuteAnalysis
   return request('/api/commutes', signal);
 }
 
+export async function renameCommuteLocation(locationId: string, name: string): Promise<CommuteAnalysis> {
+  const response = await fetch(`/api/commutes/locations/${encodeURIComponent(locationId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) throw new Error(`Request failed (${response.status})`);
+  return response.json() as Promise<CommuteAnalysis>;
+}
+
 export async function getInsights(signal?: AbortSignal): Promise<Insights> {
   return request('/api/insights', signal);
 }
