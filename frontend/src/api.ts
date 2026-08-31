@@ -1,4 +1,4 @@
-import type { Insights, RouteOverlay, WorkoutDetail, WorkoutSummary } from './types';
+import type { CommuteAnalysis, Insights, RouteOverlay, WorkoutDetail, WorkoutSummary } from './types';
 
 async function request<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { signal });
@@ -16,6 +16,10 @@ export async function getWorkoutDetail(id: string, signal?: AbortSignal): Promis
 
 export async function getRoutes(signal?: AbortSignal): Promise<{ routes: RouteOverlay[] }> {
   return request('/api/routes', signal);
+}
+
+export async function getCommutes(signal?: AbortSignal): Promise<CommuteAnalysis> {
+  return request('/api/commutes', signal);
 }
 
 export async function getInsights(signal?: AbortSignal): Promise<Insights> {

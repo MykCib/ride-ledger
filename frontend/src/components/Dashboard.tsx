@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { getInsights, getRoutes, getWorkouts } from '../api';
+import { getCommutes, getInsights, getRoutes, getWorkouts } from '../api';
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
 import { formatClock, formatDuration, formatSpeed, formatTime, formatWorkoutTitle } from '../format';
-import type { Insights, RouteOverlay, TrackPoint, WorkoutDetail, WorkoutSummary } from '../types';
+import type { CommuteAnalysis, Insights, RouteAssignment, RouteOverlay, TrackPoint, WorkoutDetail, WorkoutSummary } from '../types';
 import { AllRoutesMap, RouteMap } from './Maps';
 import { SegmentChart, SpeedChart, WeeklyChart } from './Charts';
+import { CommuteSection } from './Commutes';
 
 const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const emptyAssignments: Record<string, RouteAssignment> = {};
 
 interface HeaderProps {
   count: number;
@@ -83,13 +85,14 @@ function InsightsSection({ insights }: { insights: Insights | null }) {
   );
 }
 
-function RideList({ rides, selectedId }: { rides: WorkoutSummary[]; selectedId: string | undefined }) {
+function RideList({ rides, selectedId, assignments }: { rides: WorkoutSummary[]; selectedId: string | undefined; assignments: Record<string, RouteAssignment> }) {
   return (
     <div className="ride-list-wrap">
       <div className="section-head"><h2>Workouts</h2><span>{rides.length} FILES</span></div>
       <div className="ride-list">
         {rides.map((ride) => {
           const date = ride.date ? new Date(ride.date) : null;
+          const assignment = assignments[ride.id];
           return (
             <Link
               className={`ride${selectedId === ride.id ? ' active' : ''}`}
@@ -107,7 +110,7 @@ function RideList({ rides, selectedId }: { rides: WorkoutSummary[]; selectedId: 
               }}
             >
               <div className="ride-date"><strong>{date ? String(date.getDate()).padStart(2, '0') : '—'}</strong>{date ? date.toLocaleDateString(undefined, { month: 'short' }).toUpperCase() : ''}</div>
-              <div><div className="ride-title">{formatWorkoutTitle(ride.date)}</div><div className="ride-sub">{formatTime(ride.moving_seconds)}</div></div>
+              <div><div className="ride-title">{formatWorkoutTitle(ride.date)}</div><div className="ride-sub">{formatTime(ride.moving_seconds)}{assignment && <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>}</div></div>
               <div className="ride-distance">{(ride.distance_km || 0).toFixed(1)}<small> km</small></div>
             </Link>
           );
@@ -165,7 +168,7 @@ function StopList({ ride }: { ride: WorkoutDetail }) {
   );
 }
 
-function DetailPanel({ selectedId, ride, loading, error }: { selectedId: string | undefined; ride: WorkoutDetail | null; loading: boolean; error: Error | null }) {
+function DetailPanel({ selectedId, ride, loading, error, assignment }: { selectedId: string | undefined; ride: WorkoutDetail | null; loading: boolean; error: Error | null; assignment?: RouteAssignment }) {
   const [highlight, setHighlight] = useState<{ rideId: string; point: TrackPoint } | null>(null);
   const detailRef = useRef<HTMLElement>(null);
 
@@ -189,7 +192,7 @@ function DetailPanel({ selectedId, ride, loading, error }: { selectedId: string 
     <aside ref={detailRef} className="detail">
       <div className="detail-view">
         {isLoadingNewRide && <div className="detail-loading" aria-live="polite">Loading workout...</div>}
-        <div className="detail-head"><div><p>WORKOUT</p><h2>{fullDate}</h2></div><div className="ride-distance">{(ride.distance_km || 0).toFixed(2)} km</div></div>
+        <div className="detail-head"><div><p>WORKOUT{assignment && <> · <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>{assignment.group_id && <span className="detail-route-label">{assignment.label}</span>}</>}</p><h2>{fullDate}</h2></div><div className="ride-distance">{(ride.distance_km || 0).toFixed(2)} km</div></div>
         <RouteMap track={ride.track} highlightedPoint={highlightedPoint} />
         <div className="speed-chart"><div className="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div className="chart-wrap"><SpeedChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
         <DetailStats ride={ride} />
@@ -211,6 +214,7 @@ export function DashboardPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [routes, setRoutes] = useState<RouteOverlay[]>([]);
   const [insights, setInsights] = useState<Insights | null>(null);
+  const [commutes, setCommutes] = useState<CommuteAnalysis | null>(null);
   const [overviewError, setOverviewError] = useState<Error | null>(null);
 
   useEffect(() => {
@@ -244,8 +248,8 @@ export function DashboardPage() {
     const controller = new AbortController();
     let active = true;
     setOverviewError(null);
-    Promise.allSettled([getRoutes(controller.signal), getInsights(controller.signal)])
-      .then(([routeResult, insightResult]) => {
+    Promise.allSettled([getRoutes(controller.signal), getInsights(controller.signal), getCommutes(controller.signal)])
+      .then(([routeResult, insightResult, commuteResult]) => {
         if (!active) return;
         overviewVersion.current = refreshKey;
         const errors: string[] = [];
@@ -253,6 +257,8 @@ export function DashboardPage() {
         else errors.push(`Routes: ${routeResult.reason instanceof Error ? routeResult.reason.message : 'request failed'}`);
         if (insightResult.status === 'fulfilled') setInsights(insightResult.value);
         else errors.push(`Insights: ${insightResult.reason instanceof Error ? insightResult.reason.message : 'request failed'}`);
+        if (commuteResult.status === 'fulfilled') setCommutes(commuteResult.value);
+        else errors.push(`Route directions: ${commuteResult.reason instanceof Error ? commuteResult.reason.message : 'request failed'}`);
         if (errors.length) setOverviewError(new Error(errors.join(' · ')));
       });
     return () => {
@@ -266,6 +272,7 @@ export function DashboardPage() {
     clearDetailCache();
     setRefreshKey((value) => value + 1);
   };
+  const selectedAssignment = selectedId ? commutes?.assignments[selectedId] : undefined;
 
   return (
     <>
@@ -275,12 +282,13 @@ export function DashboardPage() {
         {loadError ? <p className="route-note">{loadError.message}</p> : <>
           <Stats rides={rides} />
           <AllRoutesSection routes={routes} />
+          <CommuteSection groups={commutes?.groups ?? []} />
           <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={rides} /></div></div></section>
           <InsightsSection insights={insights} />
           {overviewError && <p className="route-note">{overviewError.message}</p>}
           <section className="content-grid">
-            <RideList rides={rides} selectedId={selectedId} />
-            <DetailPanel selectedId={selectedId} ride={detailState.data} loading={detailState.loading} error={detailState.error} />
+            <RideList rides={rides} selectedId={selectedId} assignments={commutes?.assignments ?? emptyAssignments} />
+            <DetailPanel selectedId={selectedId} ride={detailState.data} loading={detailState.loading} error={detailState.error} assignment={selectedAssignment} />
           </section>
         </>}
       </main>

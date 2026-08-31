@@ -53,6 +53,46 @@ export interface RouteOverlay {
   points: RouteCoordinate[];
 }
 
+export type RouteDirection = 'outbound' | 'return' | 'loop';
+
+export interface RouteLocation {
+  id: string;
+  label: string;
+  lat: number;
+  lon: number;
+}
+
+export interface RoutePerformance {
+  count: number;
+  ride_ids: string[];
+  average_distance_km: number | null;
+  average_speed_kmh: number | null;
+  average_moving_seconds: number | null;
+  average_elapsed_seconds: number | null;
+  average_stopped_seconds: number | null;
+}
+
+export interface RouteGroup {
+  id: string;
+  label: string;
+  origin: RouteLocation;
+  destination: RouteLocation;
+  total_rides: number;
+  outbound: RoutePerformance;
+  return: RoutePerformance;
+}
+
+export interface RouteAssignment {
+  group_id: string | null;
+  direction: RouteDirection;
+  label: string;
+}
+
+export interface CommuteAnalysis {
+  groups: RouteGroup[];
+  assignments: Record<string, RouteAssignment>;
+}
+
 export interface Insights {
   segments: Array<number | null>;
   segment_rides: number[];

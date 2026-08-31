@@ -68,6 +68,11 @@ the FIT session's elapsed time minus moving time; individual intervals are
 inferred from unchanged-distance timestamp gaps and sustained speeds at or
 below 0.5 m/s, with intervals shorter than five seconds ignored.
 
+Repeated rides are grouped by endpoints within 500 metres. The direction with
+the earlier typical departure is labelled outbound and the reverse direction
+return; endpoint labels are anonymous because no place metadata is stored in
+the FIT files.
+
 Start the dashboard directly during development:
 
 ```sh

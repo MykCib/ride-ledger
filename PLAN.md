@@ -8,6 +8,7 @@
 - Weather data is fetched from Open-Meteo and cached.
 - Weekly distance, speed charts, and map-linked hovering are implemented.
 - The dashboard count is derived dynamically from the downloaded FIT files.
+- Repeated endpoint route groups and outbound/return comparisons are displayed.
 - Available data includes GPS, speed, altitude, distance, temperature, and timestamps.
 - Heart-rate and cadence values are currently zero and should not be used.
 
