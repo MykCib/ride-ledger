@@ -29,7 +29,7 @@ _weather_analysis_cache = None
 _weather_analysis_signature = None
 _detail_cache = {}
 _routes_lock = Lock()
-WORKOUTS_CACHE_VERSION = 3
+WORKOUTS_CACHE_VERSION = 4
 COMMUTES_CACHE_VERSION = 4
 SEGMENTS_CACHE_VERSION = 2
 WEATHER_ANALYSIS_CACHE_VERSION = 1
@@ -866,8 +866,8 @@ def parse_workout(path, include_track=False):
         "max_speed_kmh": number(session.get("enhanced_max_speed", session.get("max_speed")) * 3.6 if session.get("enhanced_max_speed", session.get("max_speed")) is not None else None, 1),
         "ascent_m": number(session.get("total_ascent"), 0),
         "descent_m": number(session.get("total_descent"), 0),
-        "climbing_rate_mph": vertical_rate(session.get("total_ascent"), moving),
-        "descent_rate_mph": vertical_rate(session.get("total_descent"), moving),
+        "climbing_rate_m_per_hour": vertical_rate(session.get("total_ascent"), moving),
+        "descent_rate_m_per_hour": vertical_rate(session.get("total_descent"), moving),
         "calories": session.get("total_calories"),
         "temperature_c": number(session.get("avg_temperature"), 0),
         "points": point_count,

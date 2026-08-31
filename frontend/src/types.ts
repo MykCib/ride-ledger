@@ -9,8 +9,8 @@ export interface WorkoutSummary {
   max_speed_kmh: number | null;
   ascent_m: number | null;
   descent_m: number | null;
-  climbing_rate_mph: number | null;
-  descent_rate_mph: number | null;
+  climbing_rate_m_per_hour: number | null;
+  descent_rate_m_per_hour: number | null;
   calories: number | null;
   temperature_c: number | null;
   points: number;

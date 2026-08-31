@@ -8,15 +8,17 @@ const tileOptions = { attribution: '© OpenStreetMap contributors' };
 interface RouteMapProps {
   track: TrackPoint[];
   highlightedPoint: TrackPoint | null;
+  playbackPoint?: TrackPoint | null;
 }
 
-export function RouteMap({ track, highlightedPoint }: RouteMapProps) {
+export function RouteMap({ track, highlightedPoint, playbackPoint = null }: RouteMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const routeRef = useRef<L.Polyline | null>(null);
   const startRef = useRef<L.CircleMarker | null>(null);
   const endRef = useRef<L.CircleMarker | null>(null);
   const highlightRef = useRef<L.CircleMarker | null>(null);
+  const playbackRef = useRef<L.CircleMarker | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -34,6 +36,7 @@ export function RouteMap({ track, highlightedPoint }: RouteMapProps) {
       startRef.current = null;
       endRef.current = null;
       highlightRef.current = null;
+      playbackRef.current = null;
     };
   }, []);
 
@@ -80,6 +83,28 @@ export function RouteMap({ track, highlightedPoint }: RouteMapProps) {
     }
     highlightRef.current.bindTooltip(`${((highlightedPoint.speed ?? 0) * 3.6).toFixed(1)} km/h`, { permanent: false }).openTooltip();
   }, [highlightedPoint]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!playbackPoint) {
+      if (playbackRef.current) map.removeLayer(playbackRef.current);
+      playbackRef.current = null;
+      return;
+    }
+    if (!playbackRef.current) {
+      playbackRef.current = L.circleMarker([playbackPoint.lat, playbackPoint.lon], {
+        radius: 9,
+        color: '#fff',
+        weight: 3,
+        fillColor: '#d45b3f',
+        fillOpacity: 1,
+      }).addTo(map);
+    } else {
+      playbackRef.current.setLatLng([playbackPoint.lat, playbackPoint.lon]);
+    }
+    playbackRef.current.bringToFront();
+  }, [playbackPoint]);
 
   return <div ref={containerRef} className="map" />;
 }

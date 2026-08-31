@@ -4,7 +4,7 @@ import { getCommutes, getInsights, getRoutes, getSegments, getWeather, getWorkou
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
 import { formatClock, formatDuration, formatSpeed, formatTime, formatVerticalRate, formatWorkoutTitle } from '../format';
-import type { CommuteAnalysis, Insights, RouteAssignment, RouteOverlay, SegmentAnalysis, TrackPoint, WeatherAnalysis, WorkoutDetail, WorkoutSummary } from '../types';
+import type { CommuteAnalysis, Insights, RouteAssignment, RouteOverlay, SegmentAnalysis, TrackPoint, WeatherAnalysis, WeatherSummary, WorkoutDetail, WorkoutSummary } from '../types';
 import { AllRoutesMap, RouteMap } from './Maps';
 import { ElevationChart, SegmentChart, SpeedChart, WeeklyChart } from './Charts';
 import { CommuteSection } from './Commutes';
@@ -135,8 +135,8 @@ function DetailStats({ ride }: { ride: WorkoutDetail }) {
     ['Top speed', formatSpeed(ride.max_speed_kmh)],
     ['Ascent', `${ride.ascent_m ?? '—'} m`],
     ['Descent', `${ride.descent_m ?? '—'} m`],
-    ['Climbing rate', formatVerticalRate(ride.climbing_rate_mph)],
-    ['Descent rate', formatVerticalRate(ride.descent_rate_mph)],
+    ['Climbing rate', formatVerticalRate(ride.climbing_rate_m_per_hour)],
+    ['Descent rate', formatVerticalRate(ride.descent_rate_m_per_hour)],
     ['Calories', ride.calories ?? '—'],
   ];
   if (ride.weather) {
@@ -173,6 +173,76 @@ function StopList({ ride }: { ride: WorkoutDetail }) {
   );
 }
 
+function PlaybackControls({ track, weather, index, playing, onToggle, onReset, onSeek }: { track: TrackPoint[]; weather: WeatherSummary | null; index: number | null; playing: boolean; onToggle: () => void; onReset: () => void; onSeek: (index: number) => void }) {
+  const point = index == null ? null : track[index] ?? null;
+  return (
+    <section className="playback-panel">
+      <div className="section-head"><h2>Route playback</h2><span>{point ? `${(index ?? 0) + 1}/${track.length}` : 'READY'}</span></div>
+      <div className="playback-controls">
+        <button type="button" onClick={onToggle} disabled={!track.length}>{playing ? 'Pause' : 'Play'}</button>
+        <button type="button" className="playback-reset" onClick={onReset} disabled={index == null}>Reset</button>
+        <input type="range" min="0" max={Math.max(track.length - 1, 0)} value={index ?? 0} onChange={(event) => onSeek(Number(event.currentTarget.value))} disabled={!track.length} aria-label="Route playback position" />
+      </div>
+      <div className="playback-readout">
+        <span>{point ? formatClock(point.t) : 'Move through the route'}</span>
+        <b>{point ? formatSpeed(point.speed == null ? null : point.speed * 3.6) : '—'}</b>
+        <b>{point?.altitude == null ? '—' : `${point.altitude.toFixed(0)} m`}</b>
+      </div>
+      {weather && <p className="chart-note">Archive weather average: {weather.temperature_c ?? '—'}°C · {weather.wind_kmh ?? '—'} km/h wind · {weather.precipitation_mm ?? '—'} mm rain.</p>}
+    </section>
+  );
+}
+
+function PlaybackMap({ ride, highlightedPoint }: { ride: WorkoutDetail; highlightedPoint: TrackPoint | null }) {
+  const [playbackIndex, setPlaybackIndex] = useState<number | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const playbackIndexRef = useRef<number | null>(null);
+
+  const setPlaybackPosition = (index: number | null) => {
+    playbackIndexRef.current = index;
+    setPlaybackIndex(index);
+  };
+
+  useEffect(() => {
+    if (!playing || !ride.track.length) return;
+    const timer = window.setInterval(() => {
+      const next = Math.min((playbackIndexRef.current ?? 0) + 4, ride.track.length - 1);
+      setPlaybackPosition(next);
+      if (next >= ride.track.length - 1) setPlaying(false);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [playing, ride.track.length]);
+
+  const playbackPoint = playbackIndex == null ? null : ride.track[playbackIndex] ?? null;
+  return (
+    <>
+      <RouteMap track={ride.track} highlightedPoint={highlightedPoint} playbackPoint={playbackPoint} />
+      <PlaybackControls
+        track={ride.track}
+        weather={ride.weather}
+        index={playbackIndex}
+        playing={playing}
+        onToggle={() => {
+          if (playing) {
+            setPlaying(false);
+            return;
+          }
+          if (playbackIndexRef.current == null || playbackIndexRef.current >= ride.track.length - 1) setPlaybackPosition(0);
+          setPlaying(true);
+        }}
+        onReset={() => {
+          setPlaybackPosition(null);
+          setPlaying(false);
+        }}
+        onSeek={(index) => {
+          setPlaybackPosition(index);
+          setPlaying(false);
+        }}
+      />
+    </>
+  );
+}
+
 function DetailPanel({ selectedId, ride, loading, error, assignment }: { selectedId: string | undefined; ride: WorkoutDetail | null; loading: boolean; error: Error | null; assignment?: RouteAssignment }) {
   const [highlight, setHighlight] = useState<{ rideId: string; point: TrackPoint } | null>(null);
   const detailRef = useRef<HTMLElement>(null);
@@ -198,7 +268,7 @@ function DetailPanel({ selectedId, ride, loading, error, assignment }: { selecte
       <div className="detail-view">
         {isLoadingNewRide && <div className="detail-loading" aria-live="polite">Loading workout...</div>}
         <div className="detail-head"><div><p>WORKOUT{assignment && <> · <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>{assignment.group_id && <span className="detail-route-label">{assignment.label}</span>}</>}</p><h2>{fullDate}</h2></div><div className="ride-distance">{(ride.distance_km || 0).toFixed(2)} km</div></div>
-         <RouteMap track={ride.track} highlightedPoint={highlightedPoint} />
+         <PlaybackMap key={ride.id} ride={ride} highlightedPoint={highlightedPoint} />
          <div className="speed-chart"><div className="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div className="chart-wrap"><SpeedChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
          <div className="elevation-chart"><div className="section-head"><h2>Elevation profile</h2><span>METRES · ROUTE PROGRESS</span></div><div className="chart-wrap"><ElevationChart track={ride.track} /></div></div>
          <DetailStats ride={ride} />

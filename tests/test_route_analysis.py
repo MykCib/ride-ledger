@@ -138,7 +138,7 @@ class RouteAnalysisTests(unittest.TestCase):
 
     def test_commute_cache_version_matches_current_metric_schema(self):
         self.assertEqual(COMMUTES_CACHE_VERSION, 4)
-        self.assertEqual(WORKOUTS_CACHE_VERSION, 3)
+        self.assertEqual(WORKOUTS_CACHE_VERSION, 4)
         self.assertEqual(INSIGHTS_CACHE_VERSION, 2)
 
     def test_vertical_rate_uses_moving_time(self):

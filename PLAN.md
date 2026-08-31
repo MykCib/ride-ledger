@@ -17,6 +17,7 @@
 - Ride details include elevation profiles plus climbing and descent rates based on moving time.
 - Weather analysis compares speed against temperature and wind, dry versus wet rides, fastest-ride conditions, and route directions.
 - Activity patterns include timezone-aware weekday and departure-hour distributions plus a riding calendar heatmap.
+- Ride details support animated track playback with a position slider, live speed and altitude, and existing start/finish markers.
 - Available data includes GPS, speed, altitude, distance, temperature, and timestamps.
 - Heart-rate and cadence values are currently zero and should not be used.
 
@@ -73,13 +74,13 @@
 
 ## Phase 5: Map Features
 
-- [ ] Add animated ride playback.
-- [ ] Add a time slider for ride playback.
-- [ ] Show the moving position on the route.
-- [ ] Display speed while playing back a ride.
-- [ ] Display altitude while playing back a ride.
+- [x] Add animated ride playback.
+- [x] Add a time slider for ride playback.
+- [x] Show the moving position on the route.
+- [x] Display speed while playing back a ride.
+- [x] Display altitude while playing back a ride.
 - [ ] Display weather conditions while playing back a ride.
-- [ ] Add route start and finish markers.
+- [x] Add route start and finish markers.
 - [ ] Add a combined route-density map.
 - [ ] Highlight roads used most often.
 - [ ] Add selectable map layers.
@@ -119,7 +120,7 @@
 5. [x] Elevation profile and climbing statistics.
 6. [x] Weather-versus-performance analysis.
 7. [x] Calendar and weekday analysis.
-8. [ ] Animated route playback.
+8. [x] Animated route playback.
 9. [ ] Data-quality checks.
 10. [ ] Advanced map layers and filters.
 
