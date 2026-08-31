@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, NavLink, useNavigate, useParams } from 'react-router-dom';
 import { getCommutes, getInsights, getRoutes, getSegments, getWeather, getWorkouts, renameCommuteLocation } from '../api';
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
@@ -32,11 +32,39 @@ function Header({ count, updated, loading, onRefresh }: HeaderProps) {
   );
 }
 
+function Navigation() {
+  return (
+    <nav className="main-nav" aria-label="Main navigation">
+      <NavLink end to="/" className={({ isActive }) => isActive ? 'active' : undefined}>Overview</NavLink>
+      <NavLink to="/rides" className={({ isActive }) => isActive ? 'active' : undefined}>Rides</NavLink>
+      <NavLink to="/routes" className={({ isActive }) => isActive ? 'active' : undefined}>Routes</NavLink>
+      <NavLink to="/insights" className={({ isActive }) => isActive ? 'active' : undefined}>Insights</NavLink>
+    </nav>
+  );
+}
+
 function Intro() {
   return (
     <section className="intro">
       <div><p className="eyebrow">PERSONAL ROUTE ARCHIVE</p><h1>Every ride,<br /><em>mapped.</em></h1></div>
       <p className="intro-copy">A quiet record of the roads between here and there. Select a ride to inspect the route, pace, and numbers.</p>
+    </section>
+  );
+}
+
+type DashboardPageName = 'overview' | 'rides' | 'routes' | 'insights';
+
+function PageIntro({ page }: { page: DashboardPageName }) {
+  if (page === 'overview') return <Intro />;
+  const copy = {
+    rides: ['THE RIDE ARCHIVE', 'The ride,', 'archive.', 'Browse every workout, then open one for its route and metrics.'],
+    routes: ['ROUTE NOTEBOOK', 'Routes,', 'repeated.', 'The roads you return to, grouped by direction and distance.'],
+    insights: ['PATTERNS IN THE ARCHIVE', 'What the roads', 'say.', 'Weather, activity, and pace patterns across the full archive.'],
+  }[page];
+  return (
+    <section className="intro page-intro">
+      <div><p className="eyebrow">{copy[0]}</p><h1>{copy[1]}<br /><em>{copy[2]}</em></h1></div>
+      <p className="intro-copy">{copy[3]}</p>
     </section>
   );
 }
@@ -53,6 +81,32 @@ function Stats({ rides }: { rides: WorkoutSummary[] }) {
     ['AVG RIDE', `${(totalKm / Math.max(rides.length, 1)).toFixed(1)} km`],
   ];
   return <section className="stats">{values.map(([label, value]) => <div className="stat" key={label}><div className="stat-label">{label}</div><div className="stat-value">{value}</div></div>)}</section>;
+}
+
+function OverviewLinks({ rides, routeCount }: { rides: WorkoutSummary[]; routeCount: number }) {
+  const latest = rides[0];
+  return (
+    <section className="overview-links">
+      <Link className="overview-link" to={latest ? `/rides/${latest.id}` : '/rides'}>
+        <p className="eyebrow">LATEST RIDE</p>
+        <h2>{latest ? formatWorkoutTitle(latest.date) : 'Open the archive'}</h2>
+        <p>{latest ? `${(latest.distance_km ?? 0).toFixed(1)} km · ${formatSpeed(latest.average_speed_kmh)}` : 'Select a workout to inspect its route and metrics.'}</p>
+        <span>Open ride <b>-&gt;</b></span>
+      </Link>
+      <Link className="overview-link overview-link-dark" to="/routes">
+        <p className="eyebrow">ROUTE NOTEBOOK</p>
+        <h2>{routeCount} repeated route{routeCount === 1 ? '' : 's'}</h2>
+        <p>See the roads together, compare directions, and inspect repeated sections.</p>
+        <span>Explore routes <b>-&gt;</b></span>
+      </Link>
+      <Link className="overview-link" to="/insights">
+        <p className="eyebrow">ARCHIVE SIGNALS</p>
+        <h2>Patterns, not noise.</h2>
+        <p>Weather, weekday, departure, and pace patterns live on the insights page.</p>
+        <span>View insights <b>-&gt;</b></span>
+      </Link>
+    </section>
+  );
 }
 
 type RouteMapLayer = 'overlay' | 'density';
@@ -376,7 +430,46 @@ function DetailPanel({ selectedId, ride, loading, error, assignment }: { selecte
   );
 }
 
-export function DashboardPage() {
+function OverviewContent({ rides, routeCount }: { rides: WorkoutSummary[]; routeCount: number }) {
+  return (
+    <div className="page-stack overview-page-content">
+      <Stats rides={rides} />
+      <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={rides} /></div></div></section>
+      <OverviewLinks rides={rides} routeCount={routeCount} />
+    </div>
+  );
+}
+
+function RoutesContent({ routes, commutes, segments, onRename }: { routes: RouteOverlay[]; commutes: CommuteAnalysis | null; segments: SegmentAnalysis | null; onRename: (locationId: string, name: string) => Promise<void> }) {
+  return (
+    <div className="page-stack routes-page-content">
+      <AllRoutesSection routes={routes} />
+      <CommuteSection timezone={commutes?.timezone ?? 'UTC'} groups={commutes?.groups ?? []} routes={routes} locations={commutes?.locations ?? []} onRename={onRename} />
+      <SegmentsSection segmentCount={segments?.segment_count ?? 0} segments={segments?.segments ?? []} />
+    </div>
+  );
+}
+
+function InsightsContent({ insights, weather }: { insights: Insights | null; weather: WeatherAnalysis | null }) {
+  return (
+    <div className="page-stack insights-page-content">
+      <InsightsSection insights={insights} />
+      <WeatherSection analysis={weather} />
+      <ActivitySection insights={insights} />
+    </div>
+  );
+}
+
+function RidesContent({ visibleRides, totalRides, selectedId, assignments, filters, allDates, directions, onFiltersChange, onFiltersReset, detailState, selectedAssignment }: { visibleRides: WorkoutSummary[]; totalRides: number; selectedId: string | undefined; assignments: Record<string, RouteAssignment>; filters: RideFilters; allDates: string[]; directions: RouteDirection[]; onFiltersChange: (filters: RideFilters) => void; onFiltersReset: () => void; detailState: { data: WorkoutDetail | null; loading: boolean; error: Error | null }; selectedAssignment?: RouteAssignment }) {
+  return (
+    <div className="content-grid rides-page-content">
+      <RideList rides={visibleRides} totalRides={totalRides} selectedId={selectedId} assignments={assignments} filters={filters} allDates={allDates} directions={directions} onFiltersChange={onFiltersChange} onFiltersReset={onFiltersReset} />
+      <DetailPanel selectedId={selectedId} ride={detailState.data} loading={detailState.loading} error={detailState.error} assignment={selectedAssignment} />
+    </div>
+  );
+}
+
+export function DashboardPage({ page }: { page: DashboardPageName }) {
   const navigate = useNavigate();
   const { rideId } = useParams<{ rideId: string }>();
   const [rides, setRides] = useState<WorkoutSummary[]>([]);
@@ -410,11 +503,11 @@ export function DashboardPage() {
     return () => controller.abort();
   }, [refreshKey]);
 
-  const validRideId = rideId && rides.some((ride) => ride.id === rideId) ? rideId : undefined;
-  const selectedId = validRideId || rides[0]?.id;
+  const validRideId = page === 'rides' && rideId && rides.some((ride) => ride.id === rideId) ? rideId : undefined;
+  const selectedId = page === 'rides' ? validRideId || rides[0]?.id : undefined;
   useEffect(() => {
-    if (rides.length && !validRideId) navigate(`/rides/${rides[0].id}`, { replace: true });
-  }, [rides, validRideId, navigate]);
+    if (page === 'rides' && rides.length && !validRideId) navigate(`/rides/${rides[0].id}`, { replace: true });
+  }, [page, rides, validRideId, navigate]);
 
   const detailState = useWorkoutDetail(selectedId, refreshKey);
   const overviewVersion = useRef(-1);
@@ -477,30 +570,21 @@ export function DashboardPage() {
   const selectedAssignment = selectedId ? commutes?.assignments[selectedId] : undefined;
   const assignments = commutes?.assignments ?? emptyAssignments;
   const visibleRides = filterRides(rides, filters, assignments);
-  const visibleRideIds = new Set(visibleRides.map((ride) => ride.id));
-  const visibleRoutes = routes.filter((route) => visibleRideIds.has(route.id));
   const allDates = [...new Set(rides.flatMap((ride) => ride.date ? [ride.date.slice(0, 10)] : []))].sort();
   const directions = [...new Set(Object.values(assignments).map((assignment) => assignment.direction))];
 
   return (
     <>
       <Header count={rides.length} updated={updated} loading={loadingRides} onRefresh={handleRefresh} />
-      <main className="shell">
-        <Intro />
+      <Navigation />
+      <main className={`shell page-shell page-${page}`}>
+        <PageIntro page={page} />
         {loadError ? <p className="route-note">{loadError.message}</p> : <>
-          <Stats rides={visibleRides} />
-          <AllRoutesSection routes={visibleRoutes} />
-          <CommuteSection timezone={commutes?.timezone ?? 'UTC'} groups={commutes?.groups ?? []} routes={routes} locations={commutes?.locations ?? []} onRename={handleRenameLocation} />
-          <SegmentsSection segmentCount={segments?.segment_count ?? 0} segments={segments?.segments ?? []} />
-          <WeatherSection analysis={weather} />
-          <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={visibleRides} /></div></div></section>
-          <InsightsSection insights={insights} />
-          <ActivitySection insights={insights} />
+          {page === 'overview' && <OverviewContent rides={rides} routeCount={commutes?.groups.length ?? 0} />}
+          {page === 'routes' && <RoutesContent routes={routes} commutes={commutes} segments={segments} onRename={handleRenameLocation} />}
+          {page === 'insights' && <InsightsContent insights={insights} weather={weather} />}
+          {page === 'rides' && <RidesContent visibleRides={visibleRides} totalRides={rides.length} selectedId={selectedId} assignments={assignments} filters={filters} allDates={allDates} directions={directions} onFiltersChange={setFilters} onFiltersReset={() => setFilters(defaultRideFilters)} detailState={detailState} selectedAssignment={selectedAssignment} />}
           {overviewError && <p className="route-note">{overviewError.message}</p>}
-          <section className="content-grid">
-            <RideList rides={visibleRides} totalRides={rides.length} selectedId={selectedId} assignments={assignments} filters={filters} allDates={allDates} directions={directions} onFiltersChange={setFilters} onFiltersReset={() => setFilters(defaultRideFilters)} />
-            <DetailPanel selectedId={selectedId} ride={detailState.data} loading={detailState.loading} error={detailState.error} assignment={selectedAssignment} />
-          </section>
         </>}
       </main>
     </>
@@ -508,5 +592,5 @@ export function DashboardPage() {
 }
 
 export function App() {
-  return <DashboardPage />;
+  return <DashboardPage page="overview" />;
 }

@@ -8,8 +8,11 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/rides/:rideId" element={<DashboardPage />} />
+        <Route path="/" element={<DashboardPage page="overview" />} />
+        <Route path="/rides" element={<DashboardPage page="rides" />} />
+        <Route path="/rides/:rideId" element={<DashboardPage page="rides" />} />
+        <Route path="/routes" element={<DashboardPage page="routes" />} />
+        <Route path="/insights" element={<DashboardPage page="insights" />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
