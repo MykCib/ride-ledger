@@ -31,6 +31,7 @@ export interface WorkoutSummary {
   stop_count: number;
   longest_stop_seconds: number;
   data_quality: WorkoutDataQuality;
+  weather: WeatherSummary | null;
 }
 
 export interface TrackPoint {
@@ -65,7 +66,17 @@ export type RouteCoordinate = [number, number];
 
 export interface RouteOverlay {
   id: string;
+  date: string | null;
   points: RouteCoordinate[];
+  samples: RouteMapSample[];
+  weather: WeatherSummary | null;
+}
+
+export interface RouteMapSample {
+  lat: number;
+  lon: number;
+  speed_kmh: number | null;
+  elevation_m: number | null;
 }
 
 export type RouteDirection = 'outbound' | 'return' | 'loop';
@@ -198,8 +209,19 @@ export interface Insights {
   calendar: ActivityDay[];
   fastest: WorkoutSummary | null;
   longest: WorkoutSummary | null;
+  monthly_summary: PeriodSummary[];
+  yearly_summary: PeriodSummary[];
   fastest_sections: FastestSection[];
   speed_distribution: SpeedDistributionBin[];
+}
+
+export interface PeriodSummary {
+  period: string;
+  label: string;
+  ride_count: number;
+  distance_km: number | null;
+  moving_seconds: number | null;
+  average_speed_kmh: number | null;
 }
 
 export interface FastestSection {

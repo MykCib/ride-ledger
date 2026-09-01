@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from web.app import COMMUTES_CACHE_VERSION, INSIGHTS_CACHE_VERSION, WORKOUTS_CACHE_VERSION, app, build_commute_analysis, build_data_quality, build_route_segments, build_weather_analysis, build_workout_insights, fastest_distance_section, route_performance, vertical_rate
+from web.app import COMMUTES_CACHE_VERSION, INSIGHTS_CACHE_VERSION, ROUTES_CACHE_VERSION, WEATHER_ANALYSIS_CACHE_VERSION, WORKOUTS_CACHE_VERSION, app, build_commute_analysis, build_data_quality, build_route_segments, build_weather_analysis, build_workout_insights, fastest_distance_section, period_summaries, route_performance, vertical_rate
 
 
 def ride(ride_id, date, distance=5.0, speed=20.0):
@@ -139,7 +139,9 @@ class RouteAnalysisTests(unittest.TestCase):
     def test_commute_cache_version_matches_current_metric_schema(self):
         self.assertEqual(COMMUTES_CACHE_VERSION, 4)
         self.assertEqual(WORKOUTS_CACHE_VERSION, 5)
-        self.assertEqual(INSIGHTS_CACHE_VERSION, 4)
+        self.assertEqual(INSIGHTS_CACHE_VERSION, 5)
+        self.assertEqual(ROUTES_CACHE_VERSION, 2)
+        self.assertEqual(WEATHER_ANALYSIS_CACHE_VERSION, 2)
 
     def test_vertical_rate_uses_moving_time(self):
         self.assertEqual(vertical_rate(100, 1800), 200.0)
@@ -261,6 +263,39 @@ class RouteAnalysisTests(unittest.TestCase):
             {"date": "2026-08-31", "ride_count": 2, "distance_km": 11.0},
             {"date": "2026-09-01", "ride_count": 1, "distance_km": 7.0},
         ])
+
+    def test_period_summaries_use_the_configured_local_date(self):
+        items = [
+            ride("january", "2026-01-31T20:30:00+00:00", distance=5.0, speed=15.0),
+            ride("february", "2026-01-31T22:30:00+00:00", distance=7.0, speed=21.0),
+        ]
+
+        result = period_summaries(items, ZoneInfo("Europe/Vilnius"), "month")
+
+        self.assertEqual(result, [
+            {"period": "2026-01", "label": "Jan 2026", "ride_count": 1, "distance_km": 5.0, "moving_seconds": 900.0, "average_speed_kmh": 15.0},
+            {"period": "2026-02", "label": "Feb 2026", "ride_count": 1, "distance_km": 7.0, "moving_seconds": 900.0, "average_speed_kmh": 21.0},
+        ])
+
+    def test_weather_analysis_cache_rebuilds_when_timezone_changes(self):
+        with TemporaryDirectory() as directory:
+            data = Path(directory)
+            (data / "weather_analysis_cache.json").write_text(json.dumps({
+                "version": WEATHER_ANALYSIS_CACHE_VERSION,
+                "signature": [["timezone", "Europe/Vilnius"]],
+                "weather": {"old": True},
+            }))
+            rebuilt = {"timezone": "UTC", "available_rides": 0}
+            with patch("web.app.DATA", data):
+                with patch.dict(os.environ, {"RIDE_LEDGER_TIMEZONE": "UTC"}):
+                    with patch("web.app._weather_analysis_cache", None), patch("web.app._weather_analysis_signature", None):
+                        with patch("web.app.workouts", return_value=[]), patch("web.app.build_weather_analysis", return_value=rebuilt) as builder:
+                            with app.test_client() as client:
+                                response = client.get("/api/weather")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json(), rebuilt)
+            builder.assert_called_once()
 
     def test_fastest_distance_section_uses_interpolated_timestamps(self):
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -447,7 +482,7 @@ class RouteAnalysisTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.get_json(), rebuilt)
             builder.assert_called_once_with([])
-            self.assertEqual(json.loads((data / "insights_cache.json").read_text())["version"], 4)
+            self.assertEqual(json.loads((data / "insights_cache.json").read_text())["version"], 5)
 
     def test_activity_insights_include_fastest_sections_and_speed_distribution(self):
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)

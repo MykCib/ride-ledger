@@ -38,7 +38,9 @@ export function prefetchDetail(id: string): void {
 }
 
 export function clearDetailCache(): void {
-  requests.forEach(({ controller }) => controller.abort());
-  requests.clear();
+  requests.forEach(({ controller }, id) => {
+    controller.abort();
+    requests.delete(id);
+  });
   cache.clear();
 }

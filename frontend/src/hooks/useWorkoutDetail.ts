@@ -24,7 +24,9 @@ export function useWorkoutDetail(id: string | undefined, refreshKey: number): De
       return () => { active = false; };
     }
 
-    setState((previous) => ({ ...previous, loading: true, error: null }));
+    setState((previous) => previous.data?.id === id
+      ? { ...previous, loading: true, error: null }
+      : { data: null, loading: true, error: null });
     fetchDetail(id)
       .then((data) => {
         if (active) setState({ data, loading: false, error: null });

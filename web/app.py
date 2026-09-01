@@ -33,8 +33,9 @@ _routes_lock = Lock()
 WORKOUTS_CACHE_VERSION = 5
 COMMUTES_CACHE_VERSION = 4
 SEGMENTS_CACHE_VERSION = 2
-WEATHER_ANALYSIS_CACHE_VERSION = 1
-INSIGHTS_CACHE_VERSION = 4
+WEATHER_ANALYSIS_CACHE_VERSION = 2
+INSIGHTS_CACHE_VERSION = 5
+ROUTES_CACHE_VERSION = 2
 LOCATION_NAMES_PATH = DATA / "location_names.json"
 DEFAULT_ANALYTICS_TIMEZONE = "Europe/Vilnius"
 STOP_SPEED_MPS = 0.5
@@ -1258,6 +1259,29 @@ def parse_workout(path, include_track=False):
     return result
 
 
+def cached_weather_payload(workout_id):
+    weather_path = DATA / "weather_cache" / f"{workout_id}.json"
+    if not weather_path.is_file():
+        return None
+    try:
+        payload = json.loads(weather_path.read_text())
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def cached_weather_summary(workout_id):
+    payload = cached_weather_payload(workout_id)
+    if payload is None:
+        return None
+    weather = {
+        field: finite_number(payload.get(field))
+        for field in ("temperature_c", "feels_like_c", "wind_kmh", "precipitation_mm")
+    }
+    weather = {field: value for field, value in weather.items() if value is not None}
+    return weather or None
+
+
 def workouts():
     global _workouts_cache, _workouts_signature
     paths = sorted(DATA.glob("*.fit"), reverse=True)
@@ -1308,7 +1332,17 @@ def frontend_route(frontend_path):
 @app.get("/api/workouts")
 def workout_list():
     items = workouts()
-    return jsonify({"workouts": items, "count": len(items), "updated": datetime.now(timezone.utc).isoformat()})
+    enriched = [{**item, "weather": cached_weather_summary(item["id"])} for item in items]
+    data_updated = max(
+        (path.stat().st_mtime for path in DATA.glob("*.fit")),
+        default=None,
+    )
+    return jsonify({
+        "workouts": enriched,
+        "count": len(enriched),
+        "updated": datetime.now(timezone.utc).isoformat(),
+        "data_updated": datetime.fromtimestamp(data_updated, timezone.utc).isoformat() if data_updated is not None else None,
+    })
 
 
 @app.get("/api/workouts/<workout_id>/download")
@@ -1343,7 +1377,7 @@ def workout_detail(workout_id):
     if cached and cached[0] == signature:
         return jsonify(cached[1])
     result = parse_workout(path, include_track=True)
-    result["weather"] = json.loads(weather_path.read_text()) if weather_path.is_file() else None
+    result["weather"] = cached_weather_payload(workout_id)
     _detail_cache[workout_id] = (signature, result)
     return jsonify(result)
 
@@ -1356,17 +1390,19 @@ def route_overlay_data():
 def _route_overlay_data():
     global _routes_cache, _routes_signature, _tracks_cache, _tracks_signature
     paths = sorted(DATA.glob("*.fit"), reverse=True)
-    signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
+    fit_signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
+    weather_paths = sorted((DATA / "weather_cache").glob("*.json")) if (DATA / "weather_cache").is_dir() else []
+    signature = fit_signature + tuple((f"weather/{path.name}", path.stat().st_size, path.stat().st_mtime_ns) for path in weather_paths)
     if _routes_cache is not None and signature == _routes_signature:
         return _routes_cache
     cache_path = DATA / "routes_cache.json"
     if cache_path.is_file():
         try:
             cached = json.loads(cache_path.read_text())
-            if tuple(tuple(item) for item in cached["signature"]) == signature:
+            if cached.get("version") == ROUTES_CACHE_VERSION and tuple(tuple(item) for item in cached["signature"]) == signature:
                 _routes_signature = signature
                 _routes_cache = cached["routes"]
-                if _tracks_signature != signature:
+                if _tracks_signature != fit_signature:
                     _tracks_cache = None
                 return _routes_cache
         except (KeyError, ValueError, OSError, json.JSONDecodeError):
@@ -1375,17 +1411,36 @@ def _route_overlay_data():
     tracks = {}
     for path in paths:
         try:
-            points = parse_workout(path, include_track=True)["track"]
+            workout = parse_workout(path, include_track=True)
+            points = workout["track"]
             tracks[path.stem] = points
-            stride = max(1, len(points) // 300)
-            routes.append({"id": path.stem, "points": [[point["lat"], point["lon"]] for point in points[::stride]]})
+            stride = max(1, (len(points) + 299) // 300)
+            sampled = points[::stride]
+            if points and sampled[-1] is not points[-1]:
+                sampled.append(points[-1])
+            routes.append({
+                "id": path.stem,
+                "date": workout.get("date"),
+                "points": [[point["lat"], point["lon"]] for point in sampled],
+                "samples": [{
+                    "lat": point["lat"],
+                    "lon": point["lon"],
+                    "speed_kmh": number(
+                        finite_number(point.get("speed")) * 3.6
+                        if finite_number(point.get("speed")) is not None else None,
+                        1,
+                    ),
+                    "elevation_m": point.get("altitude"),
+                } for point in sampled],
+                "weather": cached_weather_summary(path.stem),
+            })
         except Exception as error:
             app.logger.warning("Skipping route %s: %s", path.name, error)
     _routes_signature = signature
     _routes_cache = routes
-    _tracks_signature = signature
+    _tracks_signature = fit_signature
     _tracks_cache = tracks
-    cache_path.write_text(json.dumps({"signature": signature, "routes": routes}))
+    cache_path.write_text(json.dumps({"version": ROUTES_CACHE_VERSION, "signature": signature, "routes": routes}))
     return routes
 
 
@@ -1479,12 +1534,14 @@ def route_segments():
 
 def weather_analysis_data():
     global _weather_analysis_cache, _weather_analysis_signature
+    timezone_name, _ = analytics_timezone()
     paths = sorted(DATA.glob("*.fit"), reverse=True)
     signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
     weather_paths = sorted((DATA / "weather_cache").glob("*.json")) if (DATA / "weather_cache").is_dir() else []
     signature += tuple((f"weather/{path.name}", path.stat().st_size, path.stat().st_mtime_ns) for path in weather_paths)
     if LOCATION_NAMES_PATH.is_file():
         signature += ((LOCATION_NAMES_PATH.name, LOCATION_NAMES_PATH.stat().st_size, LOCATION_NAMES_PATH.stat().st_mtime_ns),)
+    signature += (("timezone", timezone_name),)
     if _weather_analysis_cache is not None and signature == _weather_analysis_signature:
         return _weather_analysis_cache
     cache_path = DATA / "weather_analysis_cache.json"
@@ -1511,7 +1568,7 @@ def weather_analysis():
 
 @app.put("/api/commutes/locations/<location_id>")
 def rename_commute_location(location_id):
-    global _commutes_cache, _commutes_signature, _segments_cache, _segments_signature
+    global _commutes_cache, _commutes_signature, _segments_cache, _segments_signature, _weather_analysis_cache, _weather_analysis_signature
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return jsonify({"error": "Request body must be an object"}), 400
@@ -1528,6 +1585,8 @@ def rename_commute_location(location_id):
     _commutes_signature = None
     _segments_cache = None
     _segments_signature = None
+    _weather_analysis_cache = None
+    _weather_analysis_signature = None
     cache_path = DATA / "commutes_cache.json"
     try:
         cache_path.unlink()
@@ -1535,6 +1594,10 @@ def rename_commute_location(location_id):
         pass
     try:
         (DATA / "segments_cache.json").unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        (DATA / "weather_analysis_cache.json").unlink()
     except FileNotFoundError:
         pass
     return jsonify(commute_analysis_data())
@@ -1603,6 +1666,52 @@ def fastest_section_payload(target_distance, section):
     }
 
 
+def period_summaries(items, timezone_value, period):
+    buckets = {}
+    for item in items:
+        date = item_datetime(item)
+        if date is None:
+            continue
+        local_date = date.astimezone(timezone_value)
+        key = local_date.strftime("%Y-%m" if period == "month" else "%Y")
+        bucket = buckets.setdefault(key, {
+            "period": key,
+            "ride_count": 0,
+            "distance_km": 0.0,
+            "distance_count": 0,
+            "moving_seconds": 0.0,
+            "moving_count": 0,
+            "speeds": [],
+        })
+        bucket["ride_count"] += 1
+        distance = finite_number(item.get("distance_km"))
+        if distance is not None:
+            bucket["distance_km"] += distance
+            bucket["distance_count"] += 1
+        moving = finite_number(item.get("moving_seconds"))
+        if moving is not None and moving >= 0:
+            bucket["moving_seconds"] += moving
+            bucket["moving_count"] += 1
+        speed = finite_number(item.get("average_speed_kmh"))
+        if speed is not None and speed >= 0:
+            bucket["speeds"].append(speed)
+
+    result = []
+    for key, bucket in sorted(buckets.items()):
+        result.append({
+            "period": key,
+            "label": (
+                datetime.strptime(key, "%Y-%m").strftime("%b %Y")
+                if period == "month" else key
+            ),
+            "ride_count": bucket["ride_count"],
+            "distance_km": number(bucket["distance_km"], 1) if bucket["distance_count"] else None,
+            "moving_seconds": number(bucket["moving_seconds"], 0) if bucket["moving_count"] else None,
+            "average_speed_kmh": number(sum(bucket["speeds"]) / len(bucket["speeds"]), 1) if bucket["speeds"] else None,
+        })
+    return result
+
+
 def build_workout_insights(items):
     timezone_name, timezone_value = analytics_timezone()
     bins = [[] for _ in range(10)]
@@ -1669,6 +1778,8 @@ def build_workout_insights(items):
             {**entry, "distance_km": number(entry["distance_km"], 2)}
             for _, entry in sorted(calendar.items())
         ],
+        "monthly_summary": period_summaries(items, timezone_value, "month"),
+        "yearly_summary": period_summaries(items, timezone_value, "year"),
         "fastest": max(speed_items, key=lambda item: finite_number(item["average_speed_kmh"]), default=None),
         "longest": max(distance_items, key=lambda item: finite_number(item["distance_km"]), default=None),
         "fastest_sections": [fastest_section_payload(target, fastest_sections[target]) for target in FASTEST_SECTION_DISTANCES_M],

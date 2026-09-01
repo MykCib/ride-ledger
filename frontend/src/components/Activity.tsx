@@ -48,14 +48,15 @@ function ActivityCalendar({ days }: { days: ActivityDay[] }) {
     <div className="activity-calendar-layout">
       <div className="calendar-labels">{weekdayLabels.map((label) => <span key={label}>{label}</span>)}</div>
       <div className="activity-calendar-grid">
-        {cells.map((cell) => (
-          <span
-            className={`activity-cell level-${cell.level}`}
+          {cells.map((cell) => (
+            <span
+              className={`activity-cell level-${cell.level}`}
             key={cell.date}
             title={`${cell.date}: ${cell.count} ride${cell.count === 1 ? '' : 's'}${cell.distance == null ? '' : `, ${cell.distance.toFixed(1)} km`}`}
-            aria-label={`${cell.date}: ${cell.count} rides`}
-            role="img"
-          />
+              aria-label={`${cell.date}: ${cell.count} rides`}
+              role="img"
+              tabIndex={0}
+            />
         ))}
       </div>
     </div>
@@ -82,6 +83,7 @@ export function ActivitySection({ insights }: { insights: Insights | null }) {
       <div className="calendar-card">
         <div className="section-head"><h2>Riding calendar</h2><span>{insights.calendar.length} DAYS IN ARCHIVE</span></div>
         <ActivityCalendar days={insights.calendar} />
+        <div className="calendar-legend" aria-label="Calendar ride count intensity"><span>Less</span><i className="level-0" /><i className="level-1" /><i className="level-2" /><i className="level-3" /><i className="level-4" /><span>More rides</span></div>
         <p className="chart-note">Darker cells indicate more rides on that day. Hover a cell for its date and distance.</p>
       </div>
     </section>

@@ -6,7 +6,7 @@ async function request<T>(url: string, signal?: AbortSignal): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function getWorkouts(signal?: AbortSignal): Promise<{ workouts: WorkoutSummary[]; count: number; updated: string }> {
+export async function getWorkouts(signal?: AbortSignal): Promise<{ workouts: WorkoutSummary[]; count: number; updated: string; data_updated: string | null }> {
   return request('/api/workouts', signal);
 }
 

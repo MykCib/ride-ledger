@@ -1,9 +1,23 @@
 import { useEffect, useRef } from 'react';
 import L from 'leaflet';
-import type { RouteCoordinate, RouteGroup, RouteLocation, RouteOverlay, TrackPoint } from '../types';
+import type { RouteCoordinate, RouteGroup, RouteLocation, RouteMapSample, RouteOverlay, RouteSegment, TrackPoint } from '../types';
+import { routeGroupColor } from '../routeColors';
 
 const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 const tileOptions = { attribution: '© OpenStreetMap contributors' };
+
+function clearLayers(map: L.Map, layers: L.Polyline[]): void {
+  layers.forEach((layer) => {
+    layer.off();
+    map.removeLayer(layer);
+  });
+  layers.length = 0;
+}
+
+function registerLayerClick(layer: L.Polyline, handler: () => void): () => void {
+  layer.on('click', handler);
+  return () => layer.off('click', handler);
+}
 
 interface RouteMapProps {
   track: TrackPoint[];
@@ -81,7 +95,7 @@ export function RouteMap({ track, highlightedPoint, playbackPoint = null }: Rout
     } else {
       highlightRef.current.setLatLng([highlightedPoint.lat, highlightedPoint.lon]);
     }
-    highlightRef.current.bindTooltip(`${((highlightedPoint.speed ?? 0) * 3.6).toFixed(1)} km/h`, { permanent: false }).openTooltip();
+    highlightRef.current.bindTooltip(highlightedPoint.speed == null ? 'Speed unavailable' : `${(highlightedPoint.speed * 3.6).toFixed(1)} km/h`, { permanent: false }).openTooltip();
   }, [highlightedPoint]);
 
   useEffect(() => {
@@ -106,13 +120,40 @@ export function RouteMap({ track, highlightedPoint, playbackPoint = null }: Rout
     playbackRef.current.bringToFront();
   }, [playbackPoint]);
 
-  return <div ref={containerRef} className="map" />;
+  return <div ref={containerRef} className="map" role="region" aria-label="Ride route map" />;
 }
 
-export function AllRoutesMap({ routes, mode = 'overlay' }: { routes: RouteOverlay[]; mode?: 'overlay' | 'density' }) {
+type AllRoutesMapMode = 'overlay' | 'density' | 'speed' | 'elevation';
+
+function metricValue(sample: RouteMapSample, mode: AllRoutesMapMode): number | null {
+  if (mode === 'speed') return sample.speed_kmh;
+  if (mode === 'elevation') return sample.elevation_m;
+  return null;
+}
+
+function metricColor(value: number | null, minimum: number, maximum: number): string {
+  if (value == null) return '#7c8981';
+  const ratio = maximum > minimum ? Math.max(0, Math.min(1, (value - minimum) / (maximum - minimum))) : 0.5;
+  return `hsl(${Math.round(210 - ratio * 165)} 62% ${Math.round(42 + ratio * 12)}%)`;
+}
+
+interface AllRoutesMapProps {
+  routes: RouteOverlay[];
+  mode?: AllRoutesMapMode;
+  focusRouteKey?: string;
+  selectedRouteId?: string | null;
+  onSelectRoute?: (routeId: string) => void;
+}
+
+export function AllRoutesMap({ routes, mode = 'overlay', focusRouteKey = '', selectedRouteId = null, onSelectRoute }: AllRoutesMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layersRef = useRef<L.Polyline[]>([]);
+  const selectRouteRef = useRef(onSelectRoute);
+
+  useEffect(() => {
+    selectRouteRef.current = onSelectRoute;
+  }, [onSelectRoute]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -130,29 +171,129 @@ export function AllRoutesMap({ routes, mode = 'overlay' }: { routes: RouteOverla
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    layersRef.current.forEach((layer) => map.removeLayer(layer));
-    layersRef.current = [];
+    clearLayers(map, layersRef.current);
     const bounds = L.latLngBounds([]);
+    const focusBounds = L.latLngBounds([]);
+    const focused = focusRouteKey ? new Set(focusRouteKey.split('|')) : null;
+    const createdLayers: L.Polyline[] = [];
+    const clickCleanups: Array<() => void> = [];
+    const metricValues: number[] = [];
+    routes.forEach((routeData) => {
+      if (focused && !focused.has(routeData.id)) return;
+      (routeData.samples ?? []).forEach((sample) => {
+        const value = metricValue(sample, mode);
+        if (value != null && Number.isFinite(value)) metricValues.push(value);
+      });
+    });
+    const minimum = metricValues.length ? Math.min(...metricValues) : 0;
+    const maximum = metricValues.length ? Math.max(...metricValues) : 0;
     routes.forEach((routeData) => {
       if (!routeData.points.length) return;
-      const layer = L.polyline(routeData.points, {
-        color: mode === 'density' ? '#4d6b38' : '#d45b3f',
-        weight: mode === 'density' ? 6 : 3,
-        opacity: mode === 'density' ? 0.12 : 0.42,
+      const isFocused = !focused || focused.has(routeData.id);
+      const isSelected = selectedRouteId === routeData.id;
+      const addLayer = (points: RouteCoordinate[], color: string, weight: number, opacity: number) => {
+        if (points.length < 2) return;
+        const layer = L.polyline(points, { color, weight, opacity, lineCap: 'round', lineJoin: 'round' }).addTo(map);
+        const handleClick = () => selectRouteRef.current?.(routeData.id);
+        clickCleanups.push(registerLayerClick(layer, handleClick));
+        createdLayers.push(layer);
+        layersRef.current.push(layer);
+        bounds.extend(layer.getBounds());
+        if (isFocused) focusBounds.extend(layer.getBounds());
+      };
+
+      if (mode === 'speed' || mode === 'elevation') {
+        const samples = routeData.samples?.length ? routeData.samples : routeData.points.map(([lat, lon]) => ({ lat, lon, speed_kmh: null, elevation_m: null }));
+        const metricStride = Math.max(1, Math.ceil(samples.length / 80));
+        const metricSamples = samples.filter((_sample, index) => index % metricStride === 0 || index === samples.length - 1);
+        metricSamples.slice(0, -1).forEach((sample, index) => {
+          const next = metricSamples[index + 1];
+          const value = metricValue(sample, mode);
+          addLayer([[sample.lat, sample.lon], [next.lat, next.lon]], metricColor(value, minimum, maximum), isSelected ? 6 : 3.5, isSelected ? 0.95 : isFocused ? 0.72 : 0.12);
+        });
+      } else {
+        addLayer(routeData.points, mode === 'density' ? '#4d6b38' : '#d45b3f', isSelected ? 6 : mode === 'density' ? 6 : 3, isSelected ? 0.9 : mode === 'density' ? (isFocused ? 0.18 : 0.04) : (isFocused ? 0.42 : 0.08));
+      }
+    });
+    map.invalidateSize({ pan: false });
+    const visibleBounds = focusBounds.isValid() ? focusBounds : bounds;
+    if (visibleBounds.isValid()) map.fitBounds(visibleBounds, { padding: [24, 24] });
+    return () => {
+      clickCleanups.forEach((cleanup) => cleanup());
+      createdLayers.forEach((layer) => map.removeLayer(layer));
+      layersRef.current = [];
+    };
+  }, [focusRouteKey, mode, routes, selectedRouteId]);
+
+  return <div id="all-map" ref={containerRef} className="all-map" role="region" aria-label="Interactive map of recorded rides" />;
+}
+
+interface SegmentsMapProps {
+  segments: RouteSegment[];
+  focusGroupId: string | null;
+  selectedSegmentId: string | null;
+  onSelectSegment: (segmentId: string) => void;
+}
+
+export function SegmentsMap({ segments, focusGroupId, selectedSegmentId, onSelectSegment }: SegmentsMapProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const layersRef = useRef<L.Polyline[]>([]);
+  const selectSegmentRef = useRef(onSelectSegment);
+
+  useEffect(() => {
+    selectSegmentRef.current = onSelectSegment;
+  }, [onSelectSegment]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const map = L.map(containerRef.current, { zoomControl: false }).setView([0, 0], 13);
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    L.tileLayer(tileUrl, tileOptions).addTo(map);
+    mapRef.current = map;
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      layersRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    clearLayers(map, layersRef.current);
+    const bounds = L.latLngBounds([]);
+    const createdLayers: L.Polyline[] = [];
+    const clickCleanups: Array<() => void> = [];
+    segments.forEach((segment) => {
+      const focused = !focusGroupId || segment.group_id === focusGroupId;
+      const selected = segment.id === selectedSegmentId && focused;
+      const layer = L.polyline([segment.start, segment.end], {
+        color: segment.direction === 'outbound' ? '#4d6b38' : '#d45b3f',
+        weight: selected ? 7 : 4,
+        opacity: selected ? 0.95 : !focused ? 0.12 : selectedSegmentId ? 0.22 : 0.6,
         lineCap: 'round',
-        lineJoin: 'round',
       }).addTo(map);
+      layer.bindTooltip(`${segment.label} · ${segment.progress_start}-${segment.progress_end}%`, { sticky: true });
+      const handleClick = () => selectSegmentRef.current(segment.id);
+      clickCleanups.push(registerLayerClick(layer, handleClick));
+      createdLayers.push(layer);
       layersRef.current.push(layer);
       bounds.extend(layer.getBounds());
     });
     map.invalidateSize({ pan: false });
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [24, 24] });
-  }, [mode, routes]);
+    return () => {
+      clickCleanups.forEach((cleanup) => cleanup());
+      createdLayers.forEach((layer) => {
+        map.removeLayer(layer);
+      });
+      layersRef.current = [];
+    };
+  }, [focusGroupId, segments, selectedSegmentId]);
 
-  return <div id="all-map" ref={containerRef} className="all-map" />;
+  return <div ref={containerRef} className="segment-map" role="region" aria-label="Interactive map of repeated route segments" />;
 }
-
-const commuteColors = ['#4d6b38', '#d45b3f', '#5a78a0', '#8a6e9c', '#b68c3a'];
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] || character);
@@ -208,19 +349,26 @@ interface CommuteRoutesMapProps {
   routes: RouteOverlay[];
   groups: RouteGroup[];
   locations: RouteLocation[];
+  selectedGroupId: string | null;
+  onSelectGroup: (groupId: string | null) => void;
   onRename: (locationId: string, name: string) => Promise<void>;
 }
 
-export function CommuteRoutesMap({ routes, groups, locations, onRename }: CommuteRoutesMapProps) {
+export function CommuteRoutesMap({ routes, groups, locations, selectedGroupId, onSelectGroup, onRename }: CommuteRoutesMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layersRef = useRef<L.Polyline[]>([]);
   const markersRef = useRef<L.Marker[]>([]);
   const renameRef = useRef(onRename);
+  const selectGroupRef = useRef(onSelectGroup);
 
   useEffect(() => {
     renameRef.current = onRename;
   }, [onRename]);
+
+  useEffect(() => {
+    selectGroupRef.current = onSelectGroup;
+  }, [onSelectGroup]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -239,30 +387,49 @@ export function CommuteRoutesMap({ routes, groups, locations, onRename }: Commut
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    layersRef.current.forEach((layer) => map.removeLayer(layer));
-    layersRef.current = [];
+    clearLayers(map, layersRef.current);
     const colors = new Map<string, string>();
-    groups.forEach((group, groupIndex) => {
-      const color = commuteColors[groupIndex % commuteColors.length];
-      group.outbound.ride_ids.forEach((rideId) => colors.set(rideId, color));
-      group.return.ride_ids.forEach((rideId) => colors.set(rideId, color));
+    const groupsByRoute = new Map<string, RouteGroup>();
+    groups.forEach((group) => {
+      const color = routeGroupColor(group.id);
+      [...group.outbound.ride_ids, ...group.return.ride_ids].forEach((rideId) => {
+        colors.set(rideId, color);
+        groupsByRoute.set(rideId, group);
+      });
     });
     const bounds = L.latLngBounds([]);
+    const createdLayers: L.Polyline[] = [];
+    const clickCleanups: Array<() => void> = [];
     routes.forEach((routeData) => {
       if (!routeData.points.length) return;
+      const group = groupsByRoute.get(routeData.id);
+      const selected = group?.id === selectedGroupId;
+      const dimmed = selectedGroupId !== null && !selected;
       const layer = L.polyline(routeData.points, {
         color: colors.get(routeData.id) || '#7c8981',
-        weight: 3,
-        opacity: colors.has(routeData.id) ? 0.28 : 0.2,
+        weight: selected ? 5 : 3,
+        opacity: dimmed ? 0.07 : selected ? 0.75 : colors.has(routeData.id) ? 0.28 : 0.2,
         lineCap: 'round',
         lineJoin: 'round',
       }).addTo(map);
+      if (group) {
+        const handleClick = () => selectGroupRef.current(group.id);
+        clickCleanups.push(registerLayerClick(layer, handleClick));
+      }
+      createdLayers.push(layer);
       layersRef.current.push(layer);
       bounds.extend(layer.getBounds());
     });
     map.invalidateSize({ pan: false });
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [24, 24] });
-  }, [groups, routes]);
+    return () => {
+      clickCleanups.forEach((cleanup) => cleanup());
+      createdLayers.forEach((layer) => {
+        map.removeLayer(layer);
+      });
+      layersRef.current = [];
+    };
+  }, [groups, routes, selectedGroupId]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -276,5 +443,5 @@ export function CommuteRoutesMap({ routes, groups, locations, onRename }: Commut
     });
   }, [locations]);
 
-  return <div ref={containerRef} className="commute-map" />;
+  return <div ref={containerRef} className="commute-map" role="region" aria-label="Interactive map of repeated route groups" />;
 }

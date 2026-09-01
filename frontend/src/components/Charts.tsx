@@ -83,7 +83,7 @@ export function LineChart({ values, labels, fill, beginAtZero = true, onPointHov
     chart.update('none');
   }, [labels, values]);
 
-  return <canvas ref={canvasRef} />;
+  return <canvas ref={canvasRef} role="img" aria-label="Interactive line chart" />;
 }
 
 export function BarChart({ values, labels, fill }: { values: number[]; labels: string[]; fill: string }) {
@@ -137,7 +137,21 @@ export function BarChart({ values, labels, fill }: { values: number[]; labels: s
     chart.update('none');
   }, [labels, values]);
 
-  return <canvas ref={canvasRef} />;
+  return <canvas ref={canvasRef} role="img" aria-label="Interactive bar chart" />;
+}
+
+function ChartDataDisclosure({ title, samples, value, onPointHover }: { title: string; samples: TrackPoint[]; value: (sample: TrackPoint) => string; onPointHover?: (point: TrackPoint | null) => void }) {
+  if (!samples.length) return null;
+  const stride = Math.max(1, Math.ceil(samples.length / 20));
+  const visible = samples.filter((_, index) => index % stride === 0 || index === samples.length - 1);
+  return (
+    <details className="chart-data">
+      <summary>{title} values</summary>
+      <ol>
+        {visible.map((sample, index) => <li key={sample.t ?? `${sample.lat}-${sample.lon}-${sample.speed}-${sample.altitude}`}><button type="button" onFocus={() => onPointHover?.(sample)} onBlur={() => onPointHover?.(null)}>{sample.t ? new Date(sample.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : `Point ${index + 1}`} <b>{value(sample)}</b></button></li>)}
+      </ol>
+    </details>
+  );
 }
 
 interface SpeedChartProps {
@@ -153,23 +167,42 @@ export function SpeedChart({ track, onPointHover }: SpeedChartProps) {
   const labels = samples.map((sample) => sample.t ? new Date(sample.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '');
 
   return (
-    <LineChart
-      values={values}
-      labels={labels}
-      fill="rgba(200,230,106,.35)"
-      onPointHover={(index) => onPointHover(index == null ? null : samples[index] ?? null)}
-    />
+    <>
+      <LineChart
+        values={values}
+        labels={labels}
+        fill="rgba(200,230,106,.35)"
+        onPointHover={(index) => onPointHover(index == null ? null : samples[index] ?? null)}
+      />
+      <ChartDataDisclosure title="Speed" samples={samples} value={(sample) => `${((sample.speed ?? 0) * 3.6).toFixed(1)} km/h`} onPointHover={onPointHover} />
+    </>
   );
 }
 
-export function WeeklyChart({ items }: { items: Array<{ date: string | null; distance_km: number | null }> }) {
+const weeklyDateFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function localDateKey(value: string, timezone: string): string {
+  let formatter = weeklyDateFormatters.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: timezone });
+    weeklyDateFormatters.set(timezone, formatter);
+  }
+  const parts = Object.fromEntries(formatter.formatToParts(new Date(value)).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function mondayKey(dateKey: string): string {
+  const date = new Date(`${dateKey}T12:00:00Z`);
+  const day = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - day);
+  return date.toISOString().slice(0, 10);
+}
+
+export function WeeklyChart({ items, timezone = 'Europe/Vilnius' }: { items: Array<{ date: string | null; distance_km: number | null }>; timezone?: string }) {
   const weeks: Record<string, number> = {};
   items.forEach((ride) => {
     if (!ride.date) return;
-    const date = new Date(ride.date);
-    const day = (date.getDay() + 6) % 7;
-    date.setDate(date.getDate() - day);
-    const key = date.toISOString().slice(0, 10);
+    const key = mondayKey(localDateKey(ride.date, timezone));
     weeks[key] = (weeks[key] || 0) + (ride.distance_km || 0);
   });
   const labels = Object.keys(weeks).sort();
@@ -181,7 +214,7 @@ export function SegmentChart({ values }: { values: Array<number | null> }) {
   return <LineChart values={numbers} labels={numbers.map((_, index) => `${index * 10}%`)} fill="rgba(200,230,106,.35)" />;
 }
 
-export function ElevationChart({ track }: { track: TrackPoint[] }) {
+export function ElevationChart({ track, onPointHover }: { track: TrackPoint[]; onPointHover?: (point: TrackPoint | null) => void }) {
   const valid = track.filter((point) => point.altitude != null);
   const stride = Math.max(1, Math.ceil(valid.length / 100));
   const samples = valid.filter((_, index) => index % stride === 0);
@@ -189,11 +222,15 @@ export function ElevationChart({ track }: { track: TrackPoint[] }) {
   const labels = samples.map((sample, index) => sample.distance_m != null ? `${(sample.distance_m / 1000).toFixed(1)} km` : `${index * 10}%`);
 
   return (
-    <LineChart
-      values={values}
-      labels={labels}
-      fill="rgba(90,120,160,.22)"
-      beginAtZero={false}
-    />
+    <>
+      <LineChart
+        values={values}
+        labels={labels}
+        fill="rgba(90,120,160,.22)"
+        beginAtZero={false}
+        onPointHover={(index) => onPointHover?.(index == null ? null : samples[index] ?? null)}
+      />
+      <ChartDataDisclosure title="Elevation" samples={samples} value={(sample) => `${(sample.altitude ?? 0).toFixed(0)} m`} onPointHover={onPointHover} />
+    </>
   );
 }

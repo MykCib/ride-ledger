@@ -89,9 +89,9 @@ cd ~/www/ride-ledger
 .venv/bin/python -m flask --app web.app run --host 0.0.0.0 --port 8124
 ```
 
-Open `http://localhost:8124` or `http://SERVER-IP:8124`. The app reads the
-FIT directory on every request, so press `Refresh` after the watcher downloads
-a new ride.
+Open `http://localhost:8124` or `http://SERVER-IP:8124`. The dashboard checks
+for new FIT files automatically every minute; `Refresh` can be used for an
+immediate check.
 
 Run the dashboard permanently as a user service:
 

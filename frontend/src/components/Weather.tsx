@@ -1,4 +1,5 @@
 import { formatSpeed } from '../format';
+import { Link } from 'react-router-dom';
 import type { WeatherBin, WeatherConditionStats, WeatherAnalysis } from '../types';
 import { LineChart } from './Charts';
 
@@ -54,15 +55,23 @@ function FastestWeather({ analysis }: { analysis: WeatherAnalysis }) {
       <h3>{formatSpeed(fastest.speed_kmh)}</h3>
       <span>{date}</span>
       <p>{value(fastest.temperature_c, '°C')} · {value(fastest.wind_kmh, ' km/h wind')} · {value(fastest.precipitation_mm, ' mm rain')}</p>
+      <Link className="weather-ride-link" to={`/rides/${fastest.ride_id}`}>Open ride <b>-&gt;</b></Link>
     </article>
   );
 }
 
-export function WeatherSection({ analysis }: { analysis: WeatherAnalysis | null }) {
-  if (!analysis || !analysis.available_rides) return null;
+export function WeatherSection({ analysis, error, onRetry }: { analysis: WeatherAnalysis | null; error?: string; onRetry?: () => void }) {
+  if (!analysis && error) {
+    return <section className="weather-analysis"><div className="section-head"><h2>Weather and pace</h2><span>UNAVAILABLE</span></div><div className="data-empty"><strong>Weather analysis could not be loaded.</strong><p>Try again after the weather cache or archive index is available.</p>{onRetry && <button type="button" className="weather-retry" onClick={onRetry}>Retry</button>}</div></section>;
+  }
+  if (!analysis) return null;
+  if (!analysis.available_rides) {
+    return <section className="weather-analysis"><div className="section-head"><h2>Weather and pace</h2><span>NO LINKED RIDES</span></div><div className="data-empty"><strong>Weather coverage is not available yet.</strong><p>Run the weather cache after a ride is downloaded to compare temperature, wind, and precipitation with pace.</p></div></section>;
+  }
   return (
     <section className="weather-analysis">
       <div className="section-head"><h2>Weather and pace</h2><span>{analysis.available_rides}/{analysis.total_rides} RIDES LINKED</span></div>
+      {error && onRetry && <div className="weather-refresh-error"><span>{error}</span><button type="button" onClick={onRetry}>Retry</button></div>}
       <p className="chart-note weather-note">Historical Open-Meteo conditions are compared with each ride's average speed. Rain is any cached precipitation above zero.</p>
       <div className="weather-charts">
         <WeatherChart title="Temperature" label="°C · AVERAGE SPEED" bins={analysis.temperature_bins} fill="rgba(212,91,63,.25)" />

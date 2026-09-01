@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { Link, NavLink, useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react';
+import { Link, NavLink, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { getCommutes, getInsights, getRoutes, getSegments, getWeather, getWorkouts, renameCommuteLocation } from '../api';
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
 import { formatClock, formatDuration, formatSpeed, formatTime, formatVerticalRate, formatWorkoutTitle } from '../format';
-import type { CommuteAnalysis, Insights, RouteAssignment, RouteDirection, RouteOverlay, SegmentAnalysis, TrackPoint, WeatherAnalysis, WeatherSummary, WorkoutDetail, WorkoutSummary } from '../types';
+import type { CommuteAnalysis, Insights, PeriodSummary, RouteAssignment, RouteDirection, RouteGroup, RouteOverlay, SegmentAnalysis, TrackPoint, WeatherAnalysis, WeatherSummary, WorkoutDetail, WorkoutSummary } from '../types';
 import { AllRoutesMap, RouteMap } from './Maps';
 import { BarChart, ElevationChart, SegmentChart, SpeedChart, WeeklyChart } from './Charts';
 import { CommuteSection } from './Commutes';
@@ -14,29 +14,67 @@ import { WeatherSection } from './Weather';
 
 const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const emptyAssignments: Record<string, RouteAssignment> = {};
+const weekdayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const weekdayFormatters = new Map<string, Intl.DateTimeFormat>();
+const dateFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function rideWeekday(date: string, timezone: string): number {
+  let formatter = weekdayFormatters.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: timezone });
+    weekdayFormatters.set(timezone, formatter);
+  }
+  return weekdayNames.indexOf(formatter.format(new Date(date)));
+}
+
+function rideDateKey(date: string, timezone: string): string {
+  let formatter = dateFormatters.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: timezone });
+    dateFormatters.set(timezone, formatter);
+  }
+  const parts = Object.fromEntries(formatter.formatToParts(new Date(date)).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function archiveSearch(search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete('chapter');
+  const value = params.toString();
+  return value ? `?${value}` : '';
+}
 
 interface HeaderProps {
   count: number;
   updated: string | null;
+  dataUpdated: string | null;
   loading: boolean;
+  notice: string | null;
   onRefresh: () => void;
 }
 
-function Header({ count, updated, loading, onRefresh }: HeaderProps) {
-  const updatedText = updated ? `${count} rides · updated ${new Date(updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Loading rides';
+function Header({ count, updated, dataUpdated, loading, notice, onRefresh }: HeaderProps) {
+  const checkedText = updated ? `checked ${new Date(updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'loading archive';
+  const dataText = dataUpdated ? `files ${new Date(dataUpdated).toLocaleDateString([], { month: 'short', day: 'numeric' })}` : null;
   return (
     <header className="topbar">
       <div className="brand"><span className="brand-mark">R</span><span>RIDE LEDGER</span></div>
-      <div className="top-meta"><span className="live-dot" /><span>{updatedText}</span><button type="button" onClick={onRefresh} disabled={loading}>Refresh</button></div>
+      <div className="top-meta">
+        <span className="live-dot" aria-hidden="true" />
+        <span>{count} rides · {checkedText}</span>
+        {dataText && <span className="data-updated" title={new Date(dataUpdated || '').toLocaleString()}>· {dataText}</span>}
+        {notice && <span className="sync-notice" role="status">{notice}</span>}
+        <button type="button" onClick={onRefresh} disabled={loading} aria-label={loading ? 'Refreshing archive' : 'Refresh archive'}>{loading ? 'Checking' : 'Refresh'}</button>
+      </div>
     </header>
   );
 }
 
-function Navigation() {
+function Navigation({ ridesSearch }: { ridesSearch: string }) {
   return (
     <nav className="main-nav" aria-label="Main navigation">
       <NavLink end to="/" className={({ isActive }) => isActive ? 'active' : undefined}>Overview</NavLink>
-      <NavLink to="/rides" className={({ isActive }) => isActive ? 'active' : undefined}>Rides</NavLink>
+      <NavLink to={{ pathname: '/rides', search: ridesSearch }} className={({ isActive }) => isActive ? 'active' : undefined}>Rides</NavLink>
       <NavLink to="/routes" className={({ isActive }) => isActive ? 'active' : undefined}>Routes</NavLink>
       <NavLink to="/insights" className={({ isActive }) => isActive ? 'active' : undefined}>Insights</NavLink>
     </nav>
@@ -53,20 +91,52 @@ function Intro() {
 }
 
 type DashboardPageName = 'overview' | 'rides' | 'routes' | 'insights';
+type AnalyticsErrorKey = 'directions' | 'routes' | 'segments' | 'insights' | 'weather';
+type AnalyticsErrors = Partial<Record<AnalyticsErrorKey, string>>;
 
 function PageIntro({ page }: { page: DashboardPageName }) {
   if (page === 'overview') return <Intro />;
   const copy = {
-    rides: ['THE RIDE ARCHIVE', 'The ride,', 'archive.', 'Browse every workout, then open one for its route and metrics.'],
-    routes: ['ROUTE NOTEBOOK', 'Routes,', 'repeated.', 'The roads you return to, grouped by direction and distance.'],
-    insights: ['PATTERNS IN THE ARCHIVE', 'What the roads', 'say.', 'Weather, activity, and pace patterns across the full archive.'],
+    rides: { eyebrow: 'THE RIDE ARCHIVE', title: 'Ride archive', copy: 'Browse every workout, then open one for its route and metrics.', action: 'Browse workouts', target: '#ride-list' },
+    routes: { eyebrow: 'ROUTE NOTEBOOK', title: 'Route notebook', copy: 'The roads you return to, grouped by direction and distance.', action: 'Start with the map', target: '#route-explorer' },
+    insights: { eyebrow: 'PATTERNS IN THE ARCHIVE', title: 'Archive insights', copy: 'Weather, activity, and pace patterns across the full archive.', action: 'Open highlights', target: '#insight-highlights' },
   }[page];
   return (
-    <section className="intro page-intro">
-      <div><p className="eyebrow">{copy[0]}</p><h1>{copy[1]}<br /><em>{copy[2]}</em></h1></div>
-      <p className="intro-copy">{copy[3]}</p>
+    <section className="page-header">
+      <div><p className="eyebrow">{copy.eyebrow}</p><h1>{copy.title}</h1></div>
+      <div className="page-header-side"><p className="page-header-copy">{copy.copy}</p><a className="page-header-action" href={copy.target}>{copy.action} <b>-&gt;</b></a></div>
     </section>
   );
+}
+
+function LoadingState({ label }: { label: string }) {
+  return <div className="loading-state" role="status"><span className="loading-line" /><strong>{label}</strong><p>Useful data will appear here as the archive is read.</p></div>;
+}
+
+function AnalyticsErrorNotice({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <div className="inline-error" role="alert"><span>{message}</span><button type="button" onClick={onRetry}>Retry</button></div>;
+}
+
+function DeferredContent({ children }: { children: ReactNode }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !('IntersectionObserver' in window)) {
+      setReady(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      setReady(true);
+      observer.disconnect();
+    }, { rootMargin: '400px 0px' });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  return <div ref={containerRef} className="deferred-content">{ready ? children : <div className="deferred-placeholder" aria-hidden="true" />}</div>;
 }
 
 function Stats({ rides }: { rides: WorkoutSummary[] }) {
@@ -84,14 +154,13 @@ function Stats({ rides }: { rides: WorkoutSummary[] }) {
 }
 
 function OverviewLinks({ rides, routeCount }: { rides: WorkoutSummary[]; routeCount: number }) {
-  const latest = rides[0];
   return (
     <section className="overview-links">
-      <Link className="overview-link" to={latest ? `/rides/${latest.id}` : '/rides'}>
-        <p className="eyebrow">LATEST RIDE</p>
-        <h2>{latest ? formatWorkoutTitle(latest.date) : 'Open the archive'}</h2>
-        <p>{latest ? `${(latest.distance_km ?? 0).toFixed(1)} km · ${formatSpeed(latest.average_speed_kmh)}` : 'Select a workout to inspect its route and metrics.'}</p>
-        <span>Open ride <b>-&gt;</b></span>
+      <Link className="overview-link" to="/rides">
+        <p className="eyebrow">RIDE ARCHIVE</p>
+        <h2>{rides.length ? `${rides.length} workouts` : 'Open the archive'}</h2>
+        <p>Search the archive, filter by route or weather, and inspect any workout in detail.</p>
+        <span>Browse rides <b>-&gt;</b></span>
       </Link>
       <Link className="overview-link overview-link-dark" to="/routes">
         <p className="eyebrow">ROUTE NOTEBOOK</p>
@@ -109,29 +178,133 @@ function OverviewLinks({ rides, routeCount }: { rides: WorkoutSummary[]; routeCo
   );
 }
 
-type RouteMapLayer = 'overlay' | 'density';
-
-function AllRoutesSection({ routes }: { routes: RouteOverlay[] }) {
-  const [layer, setLayer] = useState<RouteMapLayer>('overlay');
+function LatestRide({ ride }: { ride: WorkoutSummary | undefined }) {
+  if (!ride) {
+    return <section className="latest-ride"><div className="data-empty"><strong>No rides in the archive yet.</strong><p>Download a FIT workout to make the latest ride available here.</p></div></section>;
+  }
   return (
-    <section className="all-routes">
-      <div className="section-head"><h2>All routes</h2><span>{layer === 'density' ? 'DENSITY · OVERLAPPING ROADS' : 'OVERLAY · EVERY WORKOUT'}</span></div>
-      <div className="map-layer-toggle" role="group" aria-label="Route map layer">
-        <button type="button" className={layer === 'overlay' ? 'active' : ''} aria-pressed={layer === 'overlay'} onClick={() => setLayer('overlay')}>All routes</button>
-        <button type="button" className={layer === 'density' ? 'active' : ''} aria-pressed={layer === 'density'} onClick={() => setLayer('density')}>Density</button>
-      </div>
-      <AllRoutesMap routes={routes} mode={layer} />
-      <p className="chart-note">Translucent strokes compound where rides overlap; density mode makes frequently used roads easier to spot.</p>
+    <section className="latest-ride">
+      <div className="section-head"><h2>Latest ride</h2><span>READY TO INSPECT</span></div>
+      <Link className="latest-ride-link" to={`/rides/${ride.id}`}>
+        <div className="latest-ride-title"><p className="eyebrow">{formatWorkoutTitle(ride.date)}</p><h3>{ride.file}</h3><span>{ride.data_quality?.status === 'warning' ? 'Review data quality checks' : 'Complete workout record'}</span></div>
+        <div className="latest-ride-metrics"><div><span>Distance</span><strong>{ride.distance_km == null ? '—' : `${ride.distance_km.toFixed(1)} km`}</strong></div><div><span>Average speed</span><strong>{formatSpeed(ride.average_speed_kmh)}</strong></div><div><span>Moving time</span><strong>{formatTime(ride.moving_seconds)}</strong></div><b className="latest-ride-action">Open ride -&gt;</b></div>
+      </Link>
     </section>
   );
 }
 
-function InsightsSection({ insights }: { insights: Insights | null }) {
+function RecentHighlights({ rides, title = 'Recent rides' }: { rides: WorkoutSummary[]; title?: string }) {
+  const recent = rides.slice(0, 3);
+  return (
+    <section className="recent-highlights">
+      <div className="section-head"><h2>{title}</h2><Link to="/rides">Open archive <b>-&gt;</b></Link></div>
+      {recent.length ? (
+        <div className="recent-highlight-list">
+          {recent.map((ride) => (
+            <Link className="recent-highlight" to={`/rides/${ride.id}`} key={ride.id}>
+              <span className="recent-highlight-date">{formatWorkoutTitle(ride.date)}</span>
+               <strong>{ride.distance_km == null ? '—' : `${ride.distance_km.toFixed(1)} km`}</strong>
+              <span>{formatSpeed(ride.average_speed_kmh)}</span>
+              {ride.data_quality?.status === 'warning' && <span className="quality-badge">Review data</span>}
+              <b className="recent-highlight-arrow">-&gt;</b>
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <p className="empty-copy">No dated rides are available yet.</p>
+      )}
+    </section>
+  );
+}
+
+type RouteMapLayer = 'overlay' | 'density' | 'speed' | 'elevation';
+
+interface AllRoutesSectionProps {
+  routes: RouteOverlay[];
+  rides: WorkoutSummary[];
+  groups: RouteGroup[];
+  selectedGroupId: string | null;
+  selectedRouteId: string | null;
+  onSelectGroup: (groupId: string | null) => void;
+  onSelectRoute: (routeId: string | null) => void;
+}
+
+function AllRoutesSection({ routes, rides, groups, selectedGroupId, selectedRouteId, onSelectGroup, onSelectRoute, error, onRetry }: AllRoutesSectionProps & { error?: string; onRetry: () => void }) {
+  const [layer, setLayer] = useState<RouteMapLayer>('overlay');
+  const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
+  const selectedRide = selectedRouteId ? rides.find((ride) => ride.id === selectedRouteId) : null;
+  const focusRouteIds = selectedGroup ? [...selectedGroup.outbound.ride_ids, ...selectedGroup.return.ride_ids] : undefined;
+  const focusRouteSet = focusRouteIds ? new Set(focusRouteIds) : null;
+  const routeGroupByRide = new Map<string, RouteGroup>();
+  groups.forEach((group) => [...group.outbound.ride_ids, ...group.return.ride_ids].forEach((rideId) => routeGroupByRide.set(rideId, group)));
+  const selectedRouteGroup = selectedRouteId ? routeGroupByRide.get(selectedRouteId) : undefined;
+  const selectedDirection = selectedRouteId && selectedRouteGroup
+    ? selectedRouteGroup.outbound.ride_ids.includes(selectedRouteId) ? 'outbound' : selectedRouteGroup.return.ride_ids.includes(selectedRouteId) ? 'return' : null
+    : null;
+  const metricValues = routes.reduce<number[]>((values, route) => {
+    if (focusRouteSet && !focusRouteSet.has(route.id)) return values;
+    (route.samples ?? []).forEach((sample) => {
+      const value = layer === 'speed' ? sample.speed_kmh : sample.elevation_m;
+      if (value != null && Number.isFinite(value)) values.push(value);
+    });
+    return values;
+  }, []);
+  const metric = layer === 'speed' ? 'speed' : layer === 'elevation' ? 'elevation' : null;
+  const metricRange = metricValues.length ? { min: Math.min(...metricValues), max: Math.max(...metricValues) } : null;
+  const hasRouteTracks = routes.some((route) => route.points.length > 1);
+  const handleRouteSelect = (routeId: string | null) => {
+    if (!routeId) {
+      onSelectRoute(null);
+      return;
+    }
+    const group = routeGroupByRide.get(routeId);
+    onSelectGroup(group?.id ?? null);
+    onSelectRoute(routeId);
+  };
+  return (
+    <section className="all-routes" id="route-explorer">
+      <div className="section-head"><h2>Route explorer</h2><span>{routes.length} TRACKS</span></div>
+      <div className="route-map-controls">
+        <label className="route-focus-field">Focus route
+          <select value={selectedGroupId ?? ''} onChange={(event) => {
+            onSelectGroup(event.currentTarget.value || null);
+            onSelectRoute(null);
+          }}>
+            <option value="">All repeated routes</option>
+            {groups.map((group) => <option value={group.id} key={group.id}>{group.label} · {group.total_rides} rides</option>)}
+          </select>
+        </label>
+        <div className="map-layer-toggle" role="group" aria-label="Route map layer">
+        <button type="button" className={layer === 'overlay' ? 'active' : ''} aria-pressed={layer === 'overlay'} onClick={() => setLayer('overlay')}>All routes</button>
+        <button type="button" className={layer === 'density' ? 'active' : ''} aria-pressed={layer === 'density'} onClick={() => setLayer('density')}>Density</button>
+          <button type="button" className={layer === 'speed' ? 'active' : ''} aria-pressed={layer === 'speed'} onClick={() => setLayer('speed')}>Speed</button>
+          <button type="button" className={layer === 'elevation' ? 'active' : ''} aria-pressed={layer === 'elevation'} onClick={() => setLayer('elevation')}>Elevation</button>
+        </div>
+      </div>
+      {error && <AnalyticsErrorNotice message={error} onRetry={onRetry} />}
+      {hasRouteTracks ? <AllRoutesMap routes={routes} mode={layer} focusRouteKey={focusRouteIds?.join('|')} selectedRouteId={selectedRouteId} onSelectRoute={handleRouteSelect} /> : <div className="data-empty"><strong>No route tracks are available.</strong><p>Valid GPS tracks will appear here after the route index is rebuilt.</p></div>}
+      {metric && metricRange && <div className="route-metric-legend" aria-label={`${metric} map legend`}>
+        <span>Low {metric === 'speed' ? `${metricRange.min.toFixed(1)} km/h` : `${metricRange.min.toFixed(0)} m`}</span>
+        <i aria-hidden="true" />
+        <span>High {metric === 'speed' ? `${metricRange.max.toFixed(1)} km/h` : `${metricRange.max.toFixed(0)} m`}</span>
+      </div>}
+      {selectedRide ? (
+        <div className="route-selection" aria-live="polite"><span>Selected ride · {selectedRouteGroup?.label ?? 'Unassigned route'}{selectedDirection ? ` · ${selectedDirection}` : ''} · {formatWorkoutTitle(selectedRide.date)} · {formatSpeed(selectedRide.average_speed_kmh)}{selectedRide.weather && ` · ${selectedRide.weather.temperature_c ?? '—'}°C`}</span><Link to={`/rides/${selectedRide.id}`}>Open ride <b>-&gt;</b></Link></div>
+      ) : selectedGroup ? (
+        <div className="route-selection" aria-live="polite"><span>{selectedGroup.label} · {selectedGroup.total_rides} rides selected</span><button type="button" onClick={() => { onSelectGroup(null); onSelectRoute(null); }}>Clear focus</button></div>
+      ) : <p className="chart-note">Click a track to inspect one ride. Speed and elevation layers include a low-to-high legend; group colors remain available in the route notebook below.</p>}
+    </section>
+  );
+}
+
+function InsightsSection({ insights, error, onRetry }: { insights: Insights | null; error?: string; onRetry: () => void }) {
+  if (!insights) return error ? <section className="insights"><div className="data-empty"><strong>Performance insights could not be loaded.</strong><p>Try again after the archive has finished indexing.</p><AnalyticsErrorNotice message={error} onRetry={onRetry} /></div></section> : null;
   const segments = insights?.segments ?? [];
   const weekdayCounts = insights?.weekday_counts ?? [];
   const busiest = weekdayCounts.length ? weekdayCounts.indexOf(Math.max(...weekdayCounts)) : -1;
   return (
     <section className="insights">
+      {error && <AnalyticsErrorNotice message={error} onRetry={onRetry} />}
       <div className="chart-card">
         <div className="section-head"><h2>Route segments</h2><span>AVERAGE SPEED · ROUTE PROGRESS</span></div>
         <div className="chart-wrap"><SegmentChart values={segments} /></div>
@@ -141,10 +314,67 @@ function InsightsSection({ insights }: { insights: Insights | null }) {
         {insights && <>
           <p className="eyebrow">PATTERNS IN THE ARCHIVE</p>
           <div className="insight-row"><span>Most common day</span><b>{weekdays[busiest] || '—'}</b></div>
-          <div className="insight-row"><span>Fastest average</span><b>{insights.fastest ? `${(insights.fastest.average_speed_kmh ?? 0).toFixed(1)} km/h` : '—'}</b></div>
-          <div className="insight-row"><span>Longest ride</span><b>{insights.longest ? `${(insights.longest.distance_km ?? 0).toFixed(1)} km` : '—'}</b></div>
+           <div className="insight-row"><span>Fastest average</span><b>{insights.fastest ? formatSpeed(insights.fastest.average_speed_kmh) : '—'}</b></div>
+           <div className="insight-row"><span>Longest ride</span><b>{insights.longest?.distance_km == null ? '—' : `${insights.longest.distance_km.toFixed(1)} km`}</b></div>
         </>}
       </div>
+    </section>
+  );
+}
+
+function InsightHighlights({ insights, weather }: { insights: Insights; weather: WeatherAnalysis | null }) {
+  const availableRecords = insights.fastest_sections.filter((section) => section.ride_id).length;
+  const activeDays = insights.calendar.filter((day) => day.ride_count > 0).length;
+  const recentPeriods = (insights.monthly_summary ?? []).slice(-2);
+  const recentChange = recentPeriods.length === 2 && recentPeriods[0].distance_km != null && recentPeriods[1].distance_km != null
+    ? `${recentPeriods[1].distance_km - recentPeriods[0].distance_km >= 0 ? '+' : ''}${(recentPeriods[1].distance_km - recentPeriods[0].distance_km).toFixed(1)} km`
+    : '—';
+  const values: Array<[string, string, string]> = [
+    ['Fastest average', insights.fastest ? formatSpeed(insights.fastest.average_speed_kmh) : '—', 'archive pace'],
+    ['Longest ride', insights.longest?.distance_km == null ? '—' : `${insights.longest.distance_km.toFixed(1)} km`, 'single workout'],
+    ['Recent change', recentChange, recentPeriods.length === 2 ? `${recentPeriods[0].label} to ${recentPeriods[1].label}` : 'monthly distance'],
+    ['Rolling records', `${availableRecords}/3`, '1, 2, and 5 km'],
+  ];
+  return (
+    <section className="insight-highlights" id="insight-highlights">
+      <div className="section-head"><h2>Highlights</h2><span>{activeDays} ACTIVE DAYS · {weather ? `${weather.available_rides}/${weather.total_rides} WEATHER LINKED` : 'WEATHER PENDING'}</span></div>
+      <div className="highlight-grid">
+        {values.map(([label, value, note]) => <article className="highlight" key={label}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>)}
+      </div>
+    </section>
+  );
+}
+
+function PeriodSummaryTable({ periods, label }: { periods: PeriodSummary[]; label: string }) {
+  const visible = [...periods].reverse().slice(0, 12);
+  return (
+    <div className="period-summary-block">
+      <div className="section-head"><h3>{label} summary</h3><span>{periods.length} PERIODS</span></div>
+      {visible.length ? <div className="period-summary-scroll"><table className="period-summary-table"><caption>{label} ride summary</caption><thead><tr className="period-summary-heading"><th scope="col">Period</th><th scope="col">Rides</th><th scope="col">Distance</th><th scope="col">Moving</th><th scope="col">Avg speed</th></tr></thead><tbody>
+        {visible.map((period) => <tr className="period-summary-row" key={period.period}>
+          <th scope="row">{period.label}</th>
+          <td data-label="Rides">{period.ride_count}</td>
+          <td data-label="Distance">{period.distance_km == null ? '—' : `${period.distance_km.toFixed(1)} km`}</td>
+          <td data-label="Moving">{formatTime(period.moving_seconds)}</td>
+          <td data-label="Avg speed">{formatSpeed(period.average_speed_kmh)}</td>
+        </tr>)}
+      </tbody></table></div> : <p className="empty-copy">No dated rides are available for this summary.</p>}
+      {periods.length > visible.length && <p className="chart-note">Showing the latest {visible.length} periods.</p>}
+    </div>
+  );
+}
+
+function ArchiveSummaries({ insights }: { insights: Insights }) {
+  const [period, setPeriod] = useState<'month' | 'year'>('month');
+  const periods = period === 'month' ? (insights.monthly_summary ?? []) : (insights.yearly_summary ?? []);
+  return (
+    <section className="archive-summaries">
+      <div className="section-head"><h2>Archive summaries</h2><span>LOCAL TIME · {insights.timezone}</span></div>
+      <div className="summary-toggle" role="group" aria-label="Summary period">
+        <button type="button" className={period === 'month' ? 'active' : ''} aria-pressed={period === 'month'} onClick={() => setPeriod('month')}>Monthly</button>
+        <button type="button" className={period === 'year' ? 'active' : ''} aria-pressed={period === 'year'} onClick={() => setPeriod('year')}>Yearly</button>
+      </div>
+      <PeriodSummaryTable periods={periods} label={period === 'month' ? 'Monthly' : 'Yearly'} />
     </section>
   );
 }
@@ -187,6 +417,7 @@ interface RideFilters {
   to: string;
   weekday: string;
   direction: 'all' | RouteDirection;
+  weather: 'all' | 'dry' | 'wet' | 'available';
   minDistance: string;
   maxDistance: string;
   sort: 'date' | 'speed' | 'distance' | 'duration';
@@ -198,23 +429,90 @@ const defaultRideFilters: RideFilters = {
   to: '',
   weekday: 'all',
   direction: 'all',
+  weather: 'all',
   minDistance: '',
   maxDistance: '',
   sort: 'date',
 };
 
-function filterRides(rides: WorkoutSummary[], filters: RideFilters, assignments: Record<string, RouteAssignment>): WorkoutSummary[] {
+const rideFilterParams = ['q', 'from', 'to', 'weekday', 'direction', 'weather', 'min', 'max', 'sort'];
+
+function filtersFromSearchParams(params: URLSearchParams): RideFilters {
+  const direction = params.get('direction');
+  const weather = params.get('weather');
+  const sort = params.get('sort');
+  const numeric = (key: string) => {
+    const value = params.get(key);
+    return value && Number.isFinite(Number(value)) && Number(value) >= 0 ? value : '';
+  };
+  const weekday = params.get('weekday');
+  return {
+    search: params.get('q') ?? '',
+    from: params.get('from') ?? '',
+    to: params.get('to') ?? '',
+    weekday: weekday && ['0', '1', '2', '3', '4', '5', '6'].includes(weekday) ? weekday : 'all',
+    direction: direction === 'outbound' || direction === 'return' || direction === 'loop' ? direction : 'all',
+    weather: weather === 'dry' || weather === 'wet' || weather === 'available' ? weather : 'all',
+    minDistance: numeric('min'),
+    maxDistance: numeric('max'),
+    sort: sort === 'speed' || sort === 'distance' || sort === 'duration' ? sort : 'date',
+  };
+}
+
+function updateRideSearchParams(current: URLSearchParams, filters: RideFilters): URLSearchParams {
+  const next = new URLSearchParams(current);
+  rideFilterParams.forEach((key) => next.delete(key));
+  const values: Array<[string, string, string]> = [
+    ['q', filters.search.trim(), ''],
+    ['from', filters.from, ''],
+    ['to', filters.to, ''],
+    ['weekday', filters.weekday, 'all'],
+    ['direction', filters.direction, 'all'],
+    ['weather', filters.weather, 'all'],
+    ['min', filters.minDistance, ''],
+    ['max', filters.maxDistance, ''],
+    ['sort', filters.sort, 'date'],
+  ];
+  values.forEach(([key, value, defaultValue]) => {
+    if (value !== defaultValue && value !== '') next.set(key, value);
+  });
+  return next;
+}
+
+function hasActiveRideFilter(filters: RideFilters): boolean {
+  return Object.entries(filters).some(([field, value]) => field === 'sort' ? value !== 'date' : value !== '' && value !== 'all');
+}
+
+function rideFilterSummary(filters: RideFilters): string[] {
+  const summary: string[] = [];
+  if (filters.search) summary.push(`search: ${filters.search}`);
+  if (filters.from || filters.to) summary.push(`${filters.from || 'any'} to ${filters.to || 'any'}`);
+  if (filters.weekday !== 'all') summary.push(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][Number(filters.weekday)] ?? 'weekday');
+  if (filters.direction !== 'all') summary.push(filters.direction);
+  if (filters.weather !== 'all') summary.push(filters.weather === 'available' ? 'weather linked' : `${filters.weather} weather`);
+  if (filters.minDistance || filters.maxDistance) summary.push(`${filters.minDistance || '0'}-${filters.maxDistance || 'any'} km`);
+  if (filters.sort !== 'date') summary.push(filters.sort === 'speed' ? 'fastest first' : filters.sort === 'distance' ? 'longest first' : 'most moving time');
+  return summary;
+}
+
+function filterRides(rides: WorkoutSummary[], filters: RideFilters, assignments: Record<string, RouteAssignment>, timezone = 'Europe/Vilnius'): WorkoutSummary[] {
   const search = filters.search.trim().toLowerCase();
   const filtered = rides.filter((ride) => {
     const assignment = assignments[ride.id];
     const haystack = [ride.id, ride.file, ride.date, assignment?.label, assignment?.direction].join(' ').toLowerCase();
     if (search && !haystack.includes(search)) return false;
-    const date = ride.date?.slice(0, 10) ?? '';
+    const date = ride.date ? rideDateKey(ride.date, timezone) : '';
     if (filters.from && (!date || date < filters.from)) return false;
     if (filters.to && (!date || date > filters.to)) return false;
-    if (filters.weekday !== 'all' && ride.date && new Date(ride.date).getDay() !== Number(filters.weekday)) return false;
+    if (filters.weekday !== 'all' && ride.date) {
+      const weekday = rideWeekday(ride.date, timezone);
+      if (weekday !== Number(filters.weekday)) return false;
+    }
     if (filters.weekday !== 'all' && !ride.date) return false;
     if (filters.direction !== 'all' && assignment?.direction !== filters.direction) return false;
+    if (filters.weather === 'available' && !ride.weather) return false;
+    if (filters.weather === 'dry' && ride.weather?.precipitation_mm !== 0) return false;
+    if (filters.weather === 'wet' && !(ride.weather?.precipitation_mm != null && ride.weather.precipitation_mm > 0)) return false;
     const distance = ride.distance_km;
     const minimum = filters.minDistance === '' ? null : Number(filters.minDistance);
     const maximum = filters.maxDistance === '' ? null : Number(filters.maxDistance);
@@ -233,31 +531,41 @@ function filterRides(rides: WorkoutSummary[], filters: RideFilters, assignments:
   });
 }
 
-function RideFilters({ filters, dates, directions, onChange, onReset }: { filters: RideFilters; dates: string[]; directions: RouteDirection[]; onChange: (next: RideFilters) => void; onReset: () => void }) {
+function RideFilters({ filters, dates, directions, resultCount, totalCount, onChange, onReset }: { filters: RideFilters; dates: string[]; directions: RouteDirection[]; resultCount: number; totalCount: number; onChange: (next: RideFilters) => void; onReset: () => void }) {
+  const [expanded, setExpanded] = useState(() => hasActiveRideFilter(filters) || (typeof window !== 'undefined' && window.matchMedia('(min-width: 801px)').matches));
   const update = <K extends keyof RideFilters>(field: K, value: RideFilters[K]) => onChange({ ...filters, [field]: value });
-  const active = Object.entries(filters).some(([field, value]) => field === 'sort' ? value !== 'date' : value !== '' && value !== 'all');
+  const summary = rideFilterSummary(filters);
   return (
     <div className="ride-filters">
-      <div className="filter-grid">
+      <div className="filter-bar">
         <label className="filter-field filter-search">Search<input type="search" value={filters.search} onChange={(event) => update('search', event.currentTarget.value)} placeholder="Date, file, or route" /></label>
+        <button type="button" className="filter-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? 'Hide filters' : 'More filters'}{summary.length ? ` · ${summary.length}` : ''}</button>
+        {summary.length > 0 && <button type="button" className="filter-clear" onClick={onReset}>Clear all</button>}
+      </div>
+      {summary.length > 0 && <div className="active-filters" aria-label="Active filters">{summary.map((item) => <span key={item}>{item}</span>)}</div>}
+      {expanded && <div className="filter-grid">
         <label className="filter-field">From<input type="date" min={dates[0]} max={dates[dates.length - 1]} value={filters.from} onChange={(event) => update('from', event.currentTarget.value)} /></label>
         <label className="filter-field">To<input type="date" min={dates[0]} max={dates[dates.length - 1]} value={filters.to} onChange={(event) => update('to', event.currentTarget.value)} /></label>
         <label className="filter-field">Weekday<select value={filters.weekday} onChange={(event) => update('weekday', event.currentTarget.value)}><option value="all">All days</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></label>
         <label className="filter-field">Direction<select value={filters.direction} onChange={(event) => update('direction', event.currentTarget.value as RideFilters['direction'])}><option value="all">All directions</option>{directions.map((direction) => <option value={direction} key={direction}>{direction}</option>)}</select></label>
+        <label className="filter-field">Weather<select value={filters.weather} onChange={(event) => update('weather', event.currentTarget.value as RideFilters['weather'])}><option value="all">All conditions</option><option value="available">Weather linked</option><option value="dry">Dry rides</option><option value="wet">Wet rides</option></select></label>
         <label className="filter-field">Min km<input type="number" min="0" step="0.1" value={filters.minDistance} onChange={(event) => update('minDistance', event.currentTarget.value)} /></label>
         <label className="filter-field">Max km<input type="number" min="0" step="0.1" value={filters.maxDistance} onChange={(event) => update('maxDistance', event.currentTarget.value)} /></label>
         <label className="filter-field">Sort<select value={filters.sort} onChange={(event) => update('sort', event.currentTarget.value as RideFilters['sort'])}><option value="date">Newest first</option><option value="speed">Fastest first</option><option value="distance">Longest first</option><option value="duration">Most moving time</option></select></label>
-        <button type="button" className="filter-reset" onClick={onReset} disabled={!active}>Reset</button>
+        <button type="button" className="filter-reset" onClick={onReset} disabled={!hasActiveRideFilter(filters)}>Reset</button>
       </div>
+      }
+      <p className="filter-result" aria-live="polite">Showing {resultCount} of {totalCount} workouts</p>
     </div>
   );
 }
 
-function RideList({ rides, totalRides, selectedId, assignments, filters, allDates, directions, onFiltersChange, onFiltersReset }: { rides: WorkoutSummary[]; totalRides: number; selectedId: string | undefined; assignments: Record<string, RouteAssignment>; filters: RideFilters; allDates: string[]; directions: RouteDirection[]; onFiltersChange: (filters: RideFilters) => void; onFiltersReset: () => void }) {
+function RideList({ rides, totalRides, selectedId, assignments, filters, allDates, directions, locationSearch, directionsError, onRetry, onFiltersChange, onFiltersReset }: { rides: WorkoutSummary[]; totalRides: number; selectedId: string | undefined; assignments: Record<string, RouteAssignment>; filters: RideFilters; allDates: string[]; directions: RouteDirection[]; locationSearch: string; directionsError?: string; onRetry: () => void; onFiltersChange: (filters: RideFilters) => void; onFiltersReset: () => void }) {
   return (
-    <div className="ride-list-wrap">
+    <div className="ride-list-wrap" id="ride-list">
       <div className="section-head"><h2>Workouts</h2><span>{rides.length}/{totalRides} FILES</span></div>
-      <RideFilters filters={filters} dates={allDates} directions={directions} onChange={onFiltersChange} onReset={onFiltersReset} />
+      {directionsError && <AnalyticsErrorNotice message={directionsError} onRetry={onRetry} />}
+      <RideFilters filters={filters} dates={allDates} directions={directions} resultCount={rides.length} totalCount={totalRides} onChange={onFiltersChange} onReset={onFiltersReset} />
       <div className="ride-list">
         {rides.length ? rides.map((ride) => {
           const date = ride.date ? new Date(ride.date) : null;
@@ -267,7 +575,7 @@ function RideList({ rides, totalRides, selectedId, assignments, filters, allDate
               className={`ride${selectedId === ride.id ? ' active' : ''}`}
               data-id={ride.id}
               key={ride.id}
-              to={`/rides/${ride.id}`}
+              to={`/rides/${ride.id}${locationSearch}`}
               aria-current={selectedId === ride.id ? 'page' : undefined}
               onPointerEnter={() => prefetchDetail(ride.id)}
               onFocus={() => prefetchDetail(ride.id)}
@@ -279,14 +587,24 @@ function RideList({ rides, totalRides, selectedId, assignments, filters, allDate
               }}
             >
               <div className="ride-date"><strong>{date ? String(date.getDate()).padStart(2, '0') : '—'}</strong>{date ? date.toLocaleDateString(undefined, { month: 'short' }).toUpperCase() : ''}</div>
-              <div><div className="ride-title">{formatWorkoutTitle(ride.date)}</div><div className="ride-sub">{formatTime(ride.moving_seconds)}{assignment && <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>}{ride.data_quality?.status === 'warning' && <span className="quality-badge">{ride.data_quality.warning_count} QUALITY</span>}</div></div>
-              <div className="ride-distance">{(ride.distance_km || 0).toFixed(1)}<small> km</small></div>
+              <div><div className="ride-route-label">{assignment?.label ?? 'Unassigned route'}</div><div className="ride-title">{formatWorkoutTitle(ride.date)}</div><div className="ride-sub">{formatTime(ride.moving_seconds)}{assignment && <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>}{ride.weather && <span className="weather-badge">{ride.weather.precipitation_mm == null ? 'linked' : ride.weather.precipitation_mm > 0 ? 'wet' : 'dry'}</span>}{ride.data_quality?.status === 'warning' && <span className="quality-badge">{ride.data_quality.warning_count} QUALITY</span>}</div></div>
+               <div className="ride-distance">{ride.distance_km == null ? '—' : <>{ride.distance_km.toFixed(1)}<small> km</small></>}</div>
             </Link>
           );
-        }) : <p className="ride-empty">No workouts match these filters.</p>}
+        }) : <div className="ride-empty"><span>No workouts match these filters.</span>{hasActiveRideFilter(filters) && <button type="button" onClick={onFiltersReset}>Clear filters</button>}</div>}
       </div>
     </div>
   );
+}
+
+function PrimaryDetailStats({ ride }: { ride: WorkoutDetail }) {
+  const stats: Array<[string, string]> = [
+    ['Distance', ride.distance_km == null ? '—' : `${ride.distance_km.toFixed(2)} km`],
+    ['Average speed', formatSpeed(ride.average_speed_kmh)],
+    ['Moving time', formatTime(ride.moving_seconds)],
+    ['Elapsed time', formatTime(ride.elapsed_seconds)],
+  ];
+  return <div className="detail-primary-stats">{stats.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>;
 }
 
 function DetailStats({ ride }: { ride: WorkoutDetail }) {
@@ -305,15 +623,58 @@ function DetailStats({ ride }: { ride: WorkoutDetail }) {
     ['Descent rate', formatVerticalRate(ride.descent_rate_m_per_hour)],
     ['Calories', ride.calories ?? '—'],
   ];
-  if (ride.weather) {
-    stats.push(
-      ['Weather temp', `${ride.weather.temperature_c ?? '—'}°C`],
-      ['Feels like', `${ride.weather.feels_like_c ?? '—'}°C`],
-      ['Wind', `${ride.weather.wind_kmh ?? '—'} km/h`],
-      ['Precipitation', `${ride.weather.precipitation_mm ?? '—'} mm`],
-    );
-  }
   return <div className="detail-grid">{stats.map(([label, value]) => <div className="detail-stat" key={label}><span className="detail-stat-label">{label}</span><b>{value}</b></div>)}</div>;
+}
+
+function DetailWeather({ weather }: { weather: WeatherSummary }) {
+  const values: Array<[string, string]> = [
+    ['Temperature', `${weather.temperature_c ?? '—'}°C`],
+    ['Feels like', `${weather.feels_like_c ?? '—'}°C`],
+    ['Wind', `${weather.wind_kmh ?? '—'} km/h`],
+    ['Precipitation', `${weather.precipitation_mm ?? '—'} mm`],
+  ];
+  return <div className="detail-weather">{values.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>;
+}
+
+const CLOSED_CHAPTER = 'none';
+
+function DetailChapter({ id, title, label, defaultOpen = false, children }: { id: string; title: string; label: string; defaultOpen?: boolean; children: ReactNode }) {
+  const [chapterParams, setChapterParams] = useSearchParams();
+  const chapter = chapterParams.get('chapter');
+  const hasChapter = chapterParams.has('chapter');
+  const [open, setOpen] = useState(() => chapter === id || (!hasChapter && defaultOpen));
+  const previousChapterRef = useRef(chapter);
+  const userToggleRef = useRef(false);
+  useEffect(() => {
+    if (previousChapterRef.current === chapter) return;
+    previousChapterRef.current = chapter;
+    setOpen(chapter === id || (!hasChapter && defaultOpen));
+  }, [chapter, defaultOpen, hasChapter, id]);
+  const setChapterOpen = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    setChapterParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextOpen) next.set('chapter', id);
+      else if (next.get('chapter') === id || !next.has('chapter')) next.set('chapter', CLOSED_CHAPTER);
+      return next;
+    }, { replace: true });
+  };
+  const handleToggle = (event: SyntheticEvent<HTMLDetailsElement>) => {
+    if (!userToggleRef.current) return;
+    userToggleRef.current = false;
+    setChapterOpen(event.currentTarget.open);
+  };
+  return (
+    <details className="detail-chapter" open={open} onToggle={handleToggle} onKeyDown={(event) => {
+        if (event.key === 'Escape' && open) {
+          event.preventDefault();
+          setChapterOpen(false);
+        }
+      }}>
+      <summary onClick={() => { userToggleRef.current = true; }}><span><small>{label}</small><strong>{title}</strong></span><b>{open ? 'Hide' : 'Show'}</b></summary>
+      {open && <div className="detail-chapter-content">{children}</div>}
+    </details>
+  );
 }
 
 function StopList({ ride }: { ride: WorkoutDetail }) {
@@ -386,6 +747,11 @@ function PlaybackMap({ ride, highlightedPoint }: { ride: WorkoutDetail; highligh
 
   useEffect(() => {
     if (!playing || !ride.track.length) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setPlaybackPosition(ride.track.length - 1);
+      setPlaying(false);
+      return;
+    }
     const timer = window.setInterval(() => {
       const next = Math.min((playbackIndexRef.current ?? 0) + 4, ride.track.length - 1);
       setPlaybackPosition(next);
@@ -397,7 +763,7 @@ function PlaybackMap({ ride, highlightedPoint }: { ride: WorkoutDetail; highligh
   const playbackPoint = playbackIndex == null ? null : ride.track[playbackIndex] ?? null;
   return (
     <>
-      <RouteMap track={ride.track} highlightedPoint={highlightedPoint} playbackPoint={playbackPoint} />
+      {ride.track.length ? <RouteMap track={ride.track} highlightedPoint={highlightedPoint} playbackPoint={playbackPoint} /> : <div className="map-empty"><strong>No GPS track is available.</strong><span>The FIT file contains workout metrics but no mappable position records.</span></div>}
       <PlaybackControls
         track={ride.track}
         weather={ride.weather}
@@ -424,89 +790,118 @@ function PlaybackMap({ ride, highlightedPoint }: { ride: WorkoutDetail; highligh
   );
 }
 
-function DetailPanel({ selectedId, ride, loading, error, assignment }: { selectedId: string | undefined; ride: WorkoutDetail | null; loading: boolean; error: Error | null; assignment?: RouteAssignment }) {
+function DetailPanel({ selectedId, ride, loading, error, assignment, returnSearch }: { selectedId: string | undefined; ride: WorkoutDetail | null; loading: boolean; error: Error | null; assignment?: RouteAssignment; returnSearch: string }) {
   const [highlight, setHighlight] = useState<{ rideId: string; point: TrackPoint } | null>(null);
   const detailRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (!ride || selectedId !== ride.id || !window.matchMedia('(max-width: 800px)').matches) return;
-    detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+    detailRef.current?.scrollIntoView({ behavior, block: 'start' });
   }, [ride?.id, selectedId]);
 
-  if (!ride) {
+  if (!ride || !selectedId || ride.id !== selectedId) {
     return (
       <aside ref={detailRef} className="detail">
-        <div className="empty-state"><span className="empty-icon">+</span><h2>{loading ? 'Loading workout' : 'Select a workout'}</h2><p>{error?.message || 'Your route and ride details will appear here.'}</p></div>
+        <div className="empty-state" role={error ? 'alert' : 'status'}><span className="empty-icon">+</span><h2>{loading ? 'Loading workout' : error ? 'Could not load workout' : 'Select a workout'}</h2><p>{error?.message || 'Your route and ride details will appear here.'}</p></div>
       </aside>
     );
   }
 
   const highlightedPoint = highlight?.rideId === ride.id ? highlight.point : null;
   const fullDate = ride.date ? new Date(ride.date).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
-  const isLoadingNewRide = loading && selectedId !== ride.id;
   return (
     <aside ref={detailRef} className="detail">
       <div className="detail-view">
-        {isLoadingNewRide && <div className="detail-loading" aria-live="polite">Loading workout...</div>}
-        <div className="detail-head"><div><p>WORKOUT{assignment && <> · <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>{assignment.group_id && <span className="detail-route-label">{assignment.label}</span>}</>}</p><h2>{fullDate}</h2></div><div className="ride-distance">{(ride.distance_km || 0).toFixed(2)} km</div></div>
-         <PlaybackMap key={ride.id} ride={ride} highlightedPoint={highlightedPoint} />
-         <div className="speed-chart"><div className="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div className="chart-wrap"><SpeedChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
-         <div className="elevation-chart"><div className="section-head"><h2>Elevation profile</h2><span>METRES · ROUTE PROGRESS</span></div><div className="chart-wrap"><ElevationChart track={ride.track} /></div></div>
-         <DetailStats ride={ride} />
-         <StopList ride={ride} />
-         <QualityPanel ride={ride} />
-         <p className="route-note">{ride.points.toLocaleString()} GPS points · {ride.temperature_c ?? '—'}°C computer temperature · {ride.weather ? 'Historical weather from Open-Meteo' : 'Weather data is being collected for this ride'} · {ride.file}</p>
-      </div>
-      {error && <p className="route-note">Could not load selected workout: {error.message}</p>}
+        <Link className="back-link" to={`/rides${returnSearch}`}>-&gt; Back to rides</Link>
+        <div className="detail-head"><div><p>WORKOUT{assignment && <> · <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>{assignment.group_id && <span className="detail-route-label">{assignment.label}</span>}</>}</p><h2>{fullDate}</h2></div>{ride.data_quality?.status === 'warning' && <span className="quality-badge">{ride.data_quality.warning_count} checks</span>}</div>
+        <PrimaryDetailStats ride={ride} />
+        <DetailChapter id="route" key={`${ride.id}-route`} title="Route and playback" label="01 · SPATIAL CONTEXT" defaultOpen>
+          <PlaybackMap key={ride.id} ride={ride} highlightedPoint={highlightedPoint} />
+        </DetailChapter>
+        <DetailChapter id="pace" key={`${ride.id}-pace`} title="Pace and speed" label="02 · PERFORMANCE">
+          <div className="speed-chart"><div className="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div className="chart-wrap"><SpeedChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
+        </DetailChapter>
+        <DetailChapter id="elevation" key={`${ride.id}-elevation`} title="Elevation" label="03 · TERRAIN">
+          <div className="elevation-chart"><div className="section-head"><h2>Elevation profile</h2><span>METRES · ROUTE PROGRESS</span></div><div className="chart-wrap"><ElevationChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
+        </DetailChapter>
+        <DetailChapter id="timing" key={`${ride.id}-timing`} title="Timing and effort" label="04 · RIDE METRICS">
+          <DetailStats ride={ride} />
+          <StopList ride={ride} />
+        </DetailChapter>
+        <DetailChapter id="weather" key={`${ride.id}-weather`} title="Weather" label="05 · ARCHIVE CONDITIONS">
+          {ride.weather ? <><DetailWeather weather={ride.weather} /><p className="chart-note">Historical conditions are matched to the ride start and cached locally from Open-Meteo.</p></> : <p className="empty-copy">Weather has not been cached for this ride yet.</p>}
+        </DetailChapter>
+        <DetailChapter id="source" key={`${ride.id}-source`} title="Data quality and original file" label="06 · SOURCE">
+          <QualityPanel ride={ride} />
+          <p className="route-note">{ride.points.toLocaleString()} GPS points · {ride.temperature_c ?? '—'}°C computer temperature · {ride.file}</p>
+        </DetailChapter>
+       </div>
+       {error && <p className="route-note">Could not load selected workout: {error.message}</p>}
     </aside>
   );
 }
 
-function OverviewContent({ rides, routeCount }: { rides: WorkoutSummary[]; routeCount: number }) {
+function OverviewContent({ rides, routeCount, timezone, directionsError, onRetry }: { rides: WorkoutSummary[]; routeCount: number; timezone: string; directionsError?: string; onRetry: () => void }) {
   return (
     <div className="page-stack overview-page-content">
+      <LatestRide ride={rides[0]} />
       <Stats rides={rides} />
-      <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={rides} /></div></div></section>
+      <section className="overview-charts"><div className="chart-card"><div className="section-head"><h2>Distance by week</h2><span>KM</span></div><div className="chart-wrap"><WeeklyChart items={rides} timezone={timezone} /></div></div></section>
+      {rides.length > 1 && <RecentHighlights rides={rides.slice(1)} title="More recent rides" />}
+      {directionsError && <AnalyticsErrorNotice message={directionsError} onRetry={onRetry} />}
       <OverviewLinks rides={rides} routeCount={routeCount} />
     </div>
   );
 }
 
-function RoutesContent({ routes, commutes, segments, onRename }: { routes: RouteOverlay[]; commutes: CommuteAnalysis | null; segments: SegmentAnalysis | null; onRename: (locationId: string, name: string) => Promise<void> }) {
+function RoutesContent({ routes, rides, commutes, segments, errors, onRename, onRetry }: { routes: RouteOverlay[]; rides: WorkoutSummary[]; commutes: CommuteAnalysis | null; segments: SegmentAnalysis | null; errors: AnalyticsErrors; onRename: (locationId: string, name: string) => Promise<void>; onRetry: () => void }) {
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  if (!routes.length && !commutes?.groups.length && !segments?.segments.length && !Object.keys(errors).length) {
+    return <div className="data-empty"><strong>No repeated route data yet.</strong><p>Routes will appear after the archive contains valid GPS tracks.</p></div>;
+  }
   return (
     <div className="page-stack routes-page-content">
-      <AllRoutesSection routes={routes} />
-      <CommuteSection timezone={commutes?.timezone ?? 'UTC'} groups={commutes?.groups ?? []} routes={routes} locations={commutes?.locations ?? []} onRename={onRename} />
-      <SegmentsSection segmentCount={segments?.segment_count ?? 0} segments={segments?.segments ?? []} />
+      <AllRoutesSection routes={routes} rides={rides} groups={commutes?.groups ?? []} selectedGroupId={selectedGroupId} selectedRouteId={selectedRouteId} error={errors.routes} onRetry={onRetry} onSelectGroup={(groupId) => { setSelectedGroupId(groupId); setSelectedRouteId(null); }} onSelectRoute={setSelectedRouteId} />
+      {errors.directions && <AnalyticsErrorNotice message={errors.directions} onRetry={onRetry} />}
+      {commutes?.groups.length ? <DeferredContent><CommuteSection timezone={commutes.timezone} groups={commutes.groups} routes={routes} locations={commutes.locations} selectedGroupId={selectedGroupId} onSelectGroup={(groupId) => { setSelectedGroupId(groupId); setSelectedRouteId(null); }} onRename={onRename} /></DeferredContent> : null}
+      {(segments?.segments.length || errors.segments) ? <DeferredContent><SegmentsSection segmentCount={segments?.segment_count ?? 0} segments={segments?.segments ?? []} selectedGroupId={selectedGroupId} error={errors.segments} onRetry={onRetry} /></DeferredContent> : null}
     </div>
   );
 }
 
-function InsightsContent({ insights, weather }: { insights: Insights | null; weather: WeatherAnalysis | null }) {
+function InsightsContent({ insights, weather, errors, onRetry }: { insights: Insights | null; weather: WeatherAnalysis | null; errors: AnalyticsErrors; onRetry: () => void }) {
+  if (!insights && !weather) return <div className="data-empty"><strong>{errors.insights || errors.weather ? 'Archive insights are temporarily unavailable.' : 'No archive insights yet.'}</strong><p>{errors.insights || errors.weather ? 'Try again after the archive has finished indexing.' : 'Insights will appear after at least one dated ride has been indexed.'}</p>{errors.insights && <AnalyticsErrorNotice message={errors.insights} onRetry={onRetry} />}{errors.weather && <AnalyticsErrorNotice message={errors.weather} onRetry={onRetry} />}</div>;
   return (
     <div className="page-stack insights-page-content">
-      <InsightsSection insights={insights} />
+      {insights && <InsightHighlights insights={insights} weather={weather} />}
+      <InsightsSection insights={insights} error={errors.insights} onRetry={onRetry} />
       {insights && <PerformanceSection insights={insights} />}
-      <WeatherSection analysis={weather} />
-      <ActivitySection insights={insights} />
+      {(weather || errors.weather) && <DeferredContent><WeatherSection analysis={weather} error={errors.weather} onRetry={onRetry} /></DeferredContent>}
+      {insights && <DeferredContent><ActivitySection insights={insights} /></DeferredContent>}
+      {insights && <ArchiveSummaries insights={insights} />}
     </div>
   );
 }
 
-function RidesContent({ visibleRides, totalRides, selectedId, assignments, filters, allDates, directions, onFiltersChange, onFiltersReset, detailState, selectedAssignment }: { visibleRides: WorkoutSummary[]; totalRides: number; selectedId: string | undefined; assignments: Record<string, RouteAssignment>; filters: RideFilters; allDates: string[]; directions: RouteDirection[]; onFiltersChange: (filters: RideFilters) => void; onFiltersReset: () => void; detailState: { data: WorkoutDetail | null; loading: boolean; error: Error | null }; selectedAssignment?: RouteAssignment }) {
+function RidesContent({ visibleRides, totalRides, selectedId, assignments, filters, allDates, directions, locationSearch, directionsError, onRetry, onFiltersChange, onFiltersReset, detailState, selectedAssignment }: { visibleRides: WorkoutSummary[]; totalRides: number; selectedId: string | undefined; assignments: Record<string, RouteAssignment>; filters: RideFilters; allDates: string[]; directions: RouteDirection[]; locationSearch: string; directionsError?: string; onRetry: () => void; onFiltersChange: (filters: RideFilters) => void; onFiltersReset: () => void; detailState: { data: WorkoutDetail | null; loading: boolean; error: Error | null }; selectedAssignment?: RouteAssignment }) {
   return (
     <div className="content-grid rides-page-content">
-      <RideList rides={visibleRides} totalRides={totalRides} selectedId={selectedId} assignments={assignments} filters={filters} allDates={allDates} directions={directions} onFiltersChange={onFiltersChange} onFiltersReset={onFiltersReset} />
-      <DetailPanel selectedId={selectedId} ride={detailState.data} loading={detailState.loading} error={detailState.error} assignment={selectedAssignment} />
+      <RideList rides={visibleRides} totalRides={totalRides} selectedId={selectedId} assignments={assignments} filters={filters} allDates={allDates} directions={directions} locationSearch={locationSearch} directionsError={directionsError} onRetry={onRetry} onFiltersChange={onFiltersChange} onFiltersReset={onFiltersReset} />
+      <DetailPanel selectedId={selectedId} ride={detailState.data} loading={detailState.loading} error={detailState.error} assignment={selectedAssignment} returnSearch={locationSearch} />
     </div>
   );
 }
 
 export function DashboardPage({ page }: { page: DashboardPageName }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { rideId } = useParams<{ rideId: string }>();
   const [rides, setRides] = useState<WorkoutSummary[]>([]);
   const [updated, setUpdated] = useState<string | null>(null);
+  const [dataUpdated, setDataUpdated] = useState<string | null>(null);
   const [loadingRides, setLoadingRides] = useState(true);
   const [loadError, setLoadError] = useState<Error | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -515,62 +910,132 @@ export function DashboardPage({ page }: { page: DashboardPageName }) {
   const [commutes, setCommutes] = useState<CommuteAnalysis | null>(null);
   const [segments, setSegments] = useState<SegmentAnalysis | null>(null);
   const [weather, setWeather] = useState<WeatherAnalysis | null>(null);
-  const [overviewError, setOverviewError] = useState<Error | null>(null);
-  const [filters, setFilters] = useState<RideFilters>(defaultRideFilters);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsStarted, setAnalyticsStarted] = useState(false);
+  const [analyticsErrors, setAnalyticsErrors] = useState<AnalyticsErrors>({});
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const previousCount = useRef<number | null>(null);
+  const previousDataUpdated = useRef<string | null>(null);
+  const loadingRidesRef = useRef(true);
+  const rideCountRef = useRef(0);
+
+  const filters = filtersFromSearchParams(searchParams);
+  const assignments = commutes?.assignments ?? emptyAssignments;
+  const analyticsTimezone = commutes?.timezone ?? 'Europe/Vilnius';
+  const visibleRides = filterRides(rides, filters, assignments, analyticsTimezone);
+  const allDates = [...new Set(rides.flatMap((ride) => ride.date ? [rideDateKey(ride.date, analyticsTimezone)] : []))].sort();
+  const directions = [...new Set(Object.values(assignments).map((assignment) => assignment.direction))];
+
+  useEffect(() => {
+    rideCountRef.current = rides.length;
+  }, [rides.length]);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoadingRides(true);
+    loadingRidesRef.current = true;
     setLoadError(null);
     getWorkouts(controller.signal)
       .then((data) => {
+        const previous = previousCount.current;
+        if (previous != null && data.count > previous) {
+          setSyncNotice(`${data.count - previous} new ride${data.count - previous === 1 ? '' : 's'} found`);
+        } else if (previous != null && data.count < previous) {
+          setSyncNotice('Archive changed');
+        } else if (previousDataUpdated.current !== null && data.data_updated !== previousDataUpdated.current) {
+          setSyncNotice('Archive updated');
+        } else {
+          setSyncNotice(null);
+        }
+        previousCount.current = data.count;
+        previousDataUpdated.current = data.data_updated;
         setRides(data.workouts);
         setUpdated(data.updated);
+        setDataUpdated(data.data_updated);
       })
       .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === 'AbortError')) setLoadError(error instanceof Error ? error : new Error('Could not load workouts'));
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        const message = error instanceof Error ? error.message : 'Could not load workouts';
+        if (rideCountRef.current) setSyncNotice(`Refresh failed: ${message}`);
+        else setLoadError(new Error(message));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoadingRides(false);
+        if (!controller.signal.aborted) {
+          loadingRidesRef.current = false;
+          setLoadingRides(false);
+        }
       });
     return () => controller.abort();
   }, [refreshKey]);
 
-  const validRideId = page === 'rides' && rideId && rides.some((ride) => ride.id === rideId) ? rideId : undefined;
-  const selectedId = page === 'rides' ? validRideId || rides[0]?.id : undefined;
   useEffect(() => {
-    if (page === 'rides' && rides.length && !validRideId) navigate(`/rides/${rides[0].id}`, { replace: true });
-  }, [page, rides, validRideId, navigate]);
+    loadingRidesRef.current = loadingRides;
+  }, [loadingRides]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (!loadingRidesRef.current) setRefreshKey((value) => value + 1);
+    }, 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const validRideId = page === 'rides' && rideId && visibleRides.some((ride) => ride.id === rideId) ? rideId : undefined;
+  const selectedId = page === 'rides' ? validRideId || visibleRides[0]?.id : undefined;
+  useEffect(() => {
+    if (page === 'rides' && visibleRides.length && !validRideId) navigate(`/rides/${visibleRides[0].id}${location.search}`, { replace: true });
+  }, [page, visibleRides, validRideId, location.search, navigate]);
 
   const detailState = useWorkoutDetail(selectedId, refreshKey);
-  const overviewVersion = useRef(-1);
   useEffect(() => {
-    if (!rides.length || overviewVersion.current === refreshKey) return;
     const controller = new AbortController();
     let active = true;
-    setOverviewError(null);
-    Promise.allSettled([getRoutes(controller.signal), getInsights(controller.signal), getCommutes(controller.signal), getSegments(controller.signal), getWeather(controller.signal)])
-      .then(([routeResult, insightResult, commuteResult, segmentResult, weatherResult]) => {
-        if (!active) return;
-        overviewVersion.current = refreshKey;
-        const errors: string[] = [];
-        if (routeResult.status === 'fulfilled') setRoutes(routeResult.value.routes);
-        else errors.push(`Routes: ${routeResult.reason instanceof Error ? routeResult.reason.message : 'request failed'}`);
-        if (insightResult.status === 'fulfilled') setInsights(insightResult.value);
-        else errors.push(`Insights: ${insightResult.reason instanceof Error ? insightResult.reason.message : 'request failed'}`);
-        if (commuteResult.status === 'fulfilled') setCommutes(commuteResult.value);
-        else errors.push(`Route directions: ${commuteResult.reason instanceof Error ? commuteResult.reason.message : 'request failed'}`);
-        if (segmentResult.status === 'fulfilled') setSegments(segmentResult.value);
-        else errors.push(`Route segments: ${segmentResult.reason instanceof Error ? segmentResult.reason.message : 'request failed'}`);
-        if (weatherResult.status === 'fulfilled') setWeather(weatherResult.value);
-        else errors.push(`Weather analysis: ${weatherResult.reason instanceof Error ? weatherResult.reason.message : 'request failed'}`);
-        if (errors.length) setOverviewError(new Error(errors.join(' · ')));
-      });
+    if (!rides.length) {
+      setAnalyticsLoading(false);
+      setAnalyticsStarted(false);
+      setAnalyticsErrors({});
+      return () => { active = false; controller.abort(); };
+    }
+    setAnalyticsStarted(true);
+    setAnalyticsLoading(true);
+    setAnalyticsErrors({});
+    let pending = 0;
+    const errorText = (reason: unknown) => reason instanceof Error ? reason.message : 'request failed';
+    const load = <T,>(promise: Promise<T>, key: AnalyticsErrorKey, label: string, onSuccess: (value: T) => void) => {
+      pending += 1;
+      promise
+        .then((value) => {
+          if (active) onSuccess(value);
+        })
+        .catch((error: unknown) => {
+          if (active && !(error instanceof DOMException && error.name === 'AbortError')) setAnalyticsErrors((current) => ({ ...current, [key]: `${label}: ${errorText(error)}` }));
+        })
+        .finally(() => {
+          pending -= 1;
+          if (active && pending === 0) {
+            setAnalyticsLoading(false);
+          }
+        });
+    };
+
+    if (page === 'overview' || page === 'rides') {
+      load(getCommutes(controller.signal), 'directions', 'Route directions', setCommutes);
+    } else if (page === 'routes') {
+      load(getRoutes(controller.signal), 'routes', 'Routes', (data) => setRoutes(data.routes));
+      load(getCommutes(controller.signal), 'directions', 'Route directions', setCommutes);
+      load(getSegments(controller.signal), 'segments', 'Route segments', setSegments);
+    } else {
+      load(getInsights(controller.signal), 'insights', 'Insights', setInsights);
+      load(getWeather(controller.signal), 'weather', 'Weather analysis', setWeather);
+    }
+
+    if (pending === 0) {
+      setAnalyticsLoading(false);
+    }
     return () => {
       active = false;
       controller.abort();
     };
-  }, [refreshKey, rides.length]);
+  }, [page, refreshKey, rides.length]);
 
   const handleRefresh = () => {
     if (loadingRides) return;
@@ -596,28 +1061,34 @@ export function DashboardPage({ page }: { page: DashboardPageName }) {
         })),
       } : current);
     } catch (error: unknown) {
-      setOverviewError(error instanceof Error ? error : new Error('Could not rename location'));
+      setAnalyticsErrors((current) => ({ ...current, directions: error instanceof Error ? error.message : 'Could not rename location' }));
       throw error;
     }
   };
   const selectedAssignment = selectedId ? commutes?.assignments[selectedId] : undefined;
-  const assignments = commutes?.assignments ?? emptyAssignments;
-  const visibleRides = filterRides(rides, filters, assignments);
-  const allDates = [...new Set(rides.flatMap((ride) => ride.date ? [ride.date.slice(0, 10)] : []))].sort();
-  const directions = [...new Set(Object.values(assignments).map((assignment) => assignment.direction))];
+  const setRideFilters = (next: RideFilters) => setSearchParams((current) => updateRideSearchParams(current, next), { replace: true });
+  const resetRideFilters = () => setSearchParams((current) => updateRideSearchParams(current, defaultRideFilters), { replace: true });
+  const locationSearch = archiveSearch(location.search);
+  const routeReady = routes.length > 0 || commutes !== null || segments !== null;
+  const insightsReady = insights !== null || weather !== null;
+  const pageLoading = loadingRides && !rides.length;
+  const loadingLabel = page === 'routes' ? 'Loading route notebook' : page === 'insights' ? 'Loading archive insights' : 'Loading archive';
+  const ridesSearch = locationSearch;
+  const routeDataPending = page === 'routes' && rides.length > 0 && !routeReady && !analyticsStarted;
+  const insightDataPending = page === 'insights' && rides.length > 0 && !insightsReady && !analyticsStarted;
 
   return (
     <>
-      <Header count={rides.length} updated={updated} loading={loadingRides} onRefresh={handleRefresh} />
-      <Navigation />
+      <Header count={rides.length} updated={updated} dataUpdated={dataUpdated} loading={loadingRides} notice={syncNotice} onRefresh={handleRefresh} />
+      <Navigation ridesSearch={ridesSearch} />
       <main className={`shell page-shell page-${page}`}>
         <PageIntro page={page} />
-        {loadError ? <p className="route-note">{loadError.message}</p> : <>
-          {page === 'overview' && <OverviewContent rides={rides} routeCount={commutes?.groups.length ?? 0} />}
-          {page === 'routes' && <RoutesContent routes={routes} commutes={commutes} segments={segments} onRename={handleRenameLocation} />}
-          {page === 'insights' && <InsightsContent insights={insights} weather={weather} />}
-          {page === 'rides' && <RidesContent visibleRides={visibleRides} totalRides={rides.length} selectedId={selectedId} assignments={assignments} filters={filters} allDates={allDates} directions={directions} onFiltersChange={setFilters} onFiltersReset={() => setFilters(defaultRideFilters)} detailState={detailState} selectedAssignment={selectedAssignment} />}
-          {overviewError && <p className="route-note">{overviewError.message}</p>}
+        {loadError ? <div className="error-state" role="alert"><strong>Could not load the archive</strong><p>{loadError.message}</p><button type="button" onClick={handleRefresh}>Try again</button></div> : pageLoading ? <LoadingState label={loadingLabel} /> : <>
+          {analyticsLoading && <div className="page-loading-note" role="status">{loadingLabel}...</div>}
+          {page === 'overview' && <OverviewContent rides={rides} routeCount={commutes?.groups.length ?? 0} timezone={analyticsTimezone} directionsError={analyticsErrors.directions} onRetry={handleRefresh} />}
+          {page === 'routes' && (routeReady || (!analyticsLoading && !routeDataPending) ? <RoutesContent routes={routes} rides={rides} commutes={commutes} segments={segments} errors={analyticsErrors} onRename={handleRenameLocation} onRetry={handleRefresh} /> : <LoadingState label={loadingLabel} />)}
+          {page === 'insights' && (insightsReady || (!analyticsLoading && !insightDataPending) ? <InsightsContent insights={insights} weather={weather} errors={analyticsErrors} onRetry={handleRefresh} /> : <LoadingState label={loadingLabel} />)}
+          {page === 'rides' && <RidesContent visibleRides={visibleRides} totalRides={rides.length} selectedId={selectedId} assignments={assignments} filters={filters} allDates={allDates} directions={directions} locationSearch={locationSearch} directionsError={analyticsErrors.directions} onRetry={handleRefresh} onFiltersChange={setRideFilters} onFiltersReset={resetRideFilters} detailState={detailState} selectedAssignment={selectedAssignment} />}
         </>}
       </main>
     </>
