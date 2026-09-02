@@ -23,7 +23,9 @@ FIT_FILENAME = re.compile(r"[A-Za-z0-9_.-]+\.fit\Z")
 
 
 class BoardSyncError(RuntimeError):
-    pass
+    def __init__(self, message, downloaded_files=()):
+        super().__init__(message)
+        self.downloaded_files = tuple(downloaded_files)
 
 
 def read_line(port, timeout=LINE_TIMEOUT):
@@ -113,8 +115,10 @@ def fit_filenames(index_path):
 
 def sync():
     DATA.mkdir(exist_ok=True)
-    port = serial.Serial(BOARD_PORT, BAUD, timeout=1, write_timeout=5)
+    downloaded_files = []
+    port = None
     try:
+        port = serial.Serial(BOARD_PORT, BAUD, timeout=1, write_timeout=5)
         port.reset_input_buffer()
         index_path = DATA / "workouts.json"
         fetch_file(port, "workouts.json", index_path)
@@ -126,10 +130,20 @@ def sync():
                 print(f"Skip: {filename}")
                 continue
             fetch_file(port, filename, destination)
+            downloaded_files.append(filename)
             print(f"Downloaded {filename}")
+        return downloaded_files
+    except BoardSyncError as error:
+        error.downloaded_files = tuple(downloaded_files)
+        raise
+    except (serial.SerialException, OSError) as error:
+        raise BoardSyncError(str(error), downloaded_files) from error
+    except Exception as error:
+        raise BoardSyncError(str(error), downloaded_files) from error
     finally:
-        close_board(port)
-        port.close()
+        if port is not None:
+            close_board(port)
+            port.close()
 
 
 if __name__ == "__main__":
