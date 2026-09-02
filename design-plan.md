@@ -177,57 +177,61 @@ Purpose: identify meaningful archive-level patterns.
 
 ## Implementation Order
 
+Implementation items below reflect work shipped in commits through `30d1649`.
+Verification items are checked only where the previous validation directly covered
+the stated requirement.
+
 ### Phase 1: Hierarchy and Wayfinding
 
-- [ ] Replace inner-page hero blocks with compact page headers.
-- [ ] Add consistent page-level back and context actions.
-- [ ] Rework Overview around the latest ride, totals, weekly trend, and three entry points.
-- [ ] Add chapter-level loading, empty, and error states.
-- [ ] Audit navigation, focus, active, hover, pressed, and disabled states.
+- [x] Replace inner-page hero blocks with compact page headers.
+- [x] Add consistent page-level back and context actions.
+- [x] Rework Overview around the latest ride, totals, weekly trend, and three entry points.
+- [x] Add chapter-level loading, empty, and error states.
+- [x] Audit navigation, focus, active, hover, pressed, and disabled states.
 
 ### Phase 2: Rides and Detail
 
-- [ ] Persist archive filters and sort order in URL query parameters.
-- [ ] Add active-filter summary and clearer empty-result actions.
-- [ ] Recompose ride detail around map, summary metrics, and progressive-disclosure chapters.
-- [ ] Add Back to rides behavior that preserves archive state.
-- [ ] Improve mobile archive-to-detail flow and touch targets.
+- [x] Persist archive filters and sort order in URL query parameters.
+- [x] Add active-filter summary and clearer empty-result actions.
+- [x] Recompose ride detail around map, summary metrics, and progressive-disclosure chapters.
+- [x] Add Back to rides behavior that preserves archive state.
+- [x] Improve mobile archive-to-detail flow and touch targets.
 
 ### Phase 3: Route Exploration
 
-- [ ] Connect route cards and map selection.
-- [ ] Highlight selected route groups and expose matching ride links.
-- [ ] Add direct map segment selection.
-- [ ] Add speed/elevation map coloring with legends and non-color labels.
+- [x] Connect route cards and map selection.
+- [x] Highlight selected route groups and expose matching ride links.
+- [x] Add direct map segment selection.
+- [x] Add speed/elevation map coloring with legends and non-color labels.
 
 ### Phase 4: Insights and Archive Summaries
 
-- [ ] Recompose Insights into Highlights, Performance, Weather, and Activity chapters.
-- [ ] Add recent-workout highlights.
-- [ ] Add monthly and yearly summaries.
-- [ ] Add weather-aware archive filtering with a compact disclosure control.
-- [ ] Add comparison copy that explains sample size and data coverage.
+- [x] Recompose Insights into Highlights, Performance, Weather, and Activity chapters.
+- [x] Add recent-workout highlights.
+- [x] Add monthly and yearly summaries.
+- [x] Add weather-aware archive filtering with a compact disclosure control.
+- [x] Add comparison copy that explains sample size and data coverage.
 
 ### Phase 5: System and Performance Polish
 
-- [ ] Normalize spacing, borders, controls, radii, and typography across all pages.
-- [ ] Reduce unnecessary all-caps labels and secondary card containers.
-- [ ] Add page-specific data loading and lazy chart/map initialization.
-- [ ] Add automatic dashboard refresh after new downloads without interrupting active detail work.
-- [ ] Add weather readouts to playback when route-level weather data becomes available.
+- [x] Normalize spacing, borders, controls, radii, and typography across all pages.
+- [x] Reduce unnecessary all-caps labels and secondary card containers.
+- [x] Add page-specific data loading and lazy chart/map initialization.
+- [x] Add automatic dashboard refresh after new downloads without interrupting active detail work.
+- [x] Add weather readouts to playback when route-level weather data becomes available.
 
 ## Verification Checklist
 
-- [ ] Verify Overview, Rides, Routes, Insights, and ride-detail URLs at desktop width.
+- [x] Verify Overview, Rides, Routes, Insights, and ride-detail URLs at desktop width.
 - [ ] Verify the same flows at 390px mobile width without horizontal overflow or clipped controls.
-- [ ] Verify browser back/forward behavior with active ride filters.
-- [ ] Verify keyboard navigation, visible focus, and Escape behavior for disclosures and controls.
+- [x] Verify browser back/forward behavior with active ride filters.
+- [x] Verify keyboard navigation, visible focus, and Escape behavior for disclosures and controls.
 - [ ] Verify loading, empty, partial-data, API-error, and data-quality-warning states.
-- [ ] Verify route and chart interactions without relying on color alone.
+- [x] Verify route and chart interactions without relying on color alone.
 - [ ] Verify reduced-motion behavior for navigation, hover movement, and playback.
 - [ ] Check browser console errors and network waterfalls.
-- [ ] Run `npm run typecheck`, `npm run build`, Python tests, `git diff --check`, and React Doctor.
-- [ ] Review long pages chapter by chapter rather than checking only the first viewport.
+- [x] Run `npm run typecheck`, `npm run build`, Python tests, `git diff --check`, and React Doctor.
+- [x] Review long pages chapter by chapter rather than checking only the first viewport.
 
 ## Success Criteria
 
