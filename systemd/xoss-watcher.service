@@ -10,6 +10,7 @@ ExecStart=/usr/bin/sg dialout -c '%h/www/ride-ledger/.venv/bin/python %h/www/rid
 Restart=always
 RestartSec=10
 Environment="XOSS_BOARD_PORT=/dev/serial/by-id/usb-Arduino_UNO_WiFi_R4_CMSIS-DAP_48CA435CF8F0-if01"
+Environment="XOSS_COOLDOWN_SECONDS=3600"
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

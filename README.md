@@ -134,18 +134,20 @@ Stop the dashboard:
 docker compose down
 ```
 
-Weather enrichment runs automatically after the XOSS watcher completes a sync.
-It uses the historical Open-Meteo archive and stores one JSON cache file per
-ride in `data/weather_cache/`. To enrich existing rides manually, run:
+Weather enrichment runs automatically for newly downloaded rides after the XOSS
+watcher completes a sync. It uses the historical Open-Meteo archive and stores
+one JSON cache file per ride in `data/weather_cache/`. To enrich existing rides
+manually, run:
 
 ```sh
 .venv/bin/python host/weather_cache.py
 ```
 
-The watcher performs a 15-second BLE scan, then waits 60 seconds before the
-next scan. After finding the computer, it runs the synchronizer and waits 60
-seconds before checking again. It is safe to leave the XOSS active: existing
-FIT files are skipped.
+The watcher checks the XOSS through the bridge every 60 seconds when no new FIT
+files are available. After one or more new FIT files are downloaded, it closes
+the bridge connection and pauses all XOSS polling for one hour to let the device
+sleep. Set `XOSS_COOLDOWN_SECONDS` to change the cooldown. Existing FIT files
+are skipped and do not start the cooldown.
 
 ## Homeserver prerequisites
 
