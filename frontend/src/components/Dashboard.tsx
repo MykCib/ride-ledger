@@ -643,13 +643,7 @@ function DetailChapter({ id, title, label, defaultOpen = false, children }: { id
   const chapter = chapterParams.get('chapter');
   const hasChapter = chapterParams.has('chapter');
   const [open, setOpen] = useState(() => chapter === id || (!hasChapter && defaultOpen));
-  const previousChapterRef = useRef(chapter);
   const userToggleRef = useRef(false);
-  useEffect(() => {
-    if (previousChapterRef.current === chapter) return;
-    previousChapterRef.current = chapter;
-    setOpen(chapter === id || (!hasChapter && defaultOpen));
-  }, [chapter, defaultOpen, hasChapter, id]);
   const setChapterOpen = (nextOpen: boolean) => {
     setOpen(nextOpen);
     setChapterParams((current) => {
