@@ -2,6 +2,7 @@ import { formatSpeed } from '../format';
 import { Link } from 'react-router-dom';
 import type { WeatherBin, WeatherConditionStats, WeatherAnalysis } from '../types';
 import { LineChart } from './Charts';
+import { MetricSeparator } from './MetricSeparator';
 
 function value(value: number | null, unit: string): string {
   return value == null ? '—' : `${value.toFixed(1)}${unit}`;
@@ -30,7 +31,7 @@ function ConditionCard({ label, stats }: { label: string; stats: WeatherConditio
       <p className="eyebrow">{label} RIDES</p>
       <strong>{stats.count}</strong>
       <span>{formatSpeed(stats.average_speed_kmh)} average</span>
-      <p>{value(stats.average_temperature_c, '°C')} · {value(stats.average_wind_kmh, ' km/h wind')}</p>
+      <p>{value(stats.average_temperature_c, '°C')} <MetricSeparator /> {value(stats.average_wind_kmh, ' km/h wind')}</p>
     </article>
   );
 }
@@ -40,7 +41,7 @@ function DirectionWeather({ title, stats }: { title: string; stats: WeatherCondi
     <div className="weather-direction-stat">
       <div><span>{title}</span><b>{stats.count} rides</b></div>
       <strong>{formatSpeed(stats.average_speed_kmh)}</strong>
-      <small>{value(stats.average_temperature_c, '°C')} · {value(stats.average_wind_kmh, ' km/h wind')} · {value(stats.average_precipitation_mm, ' mm rain')}</small>
+      <small>{value(stats.average_temperature_c, '°C')} <MetricSeparator /> {value(stats.average_wind_kmh, ' km/h wind')} <MetricSeparator /> {value(stats.average_precipitation_mm, ' mm rain')}</small>
     </div>
   );
 }
@@ -54,7 +55,7 @@ function FastestWeather({ analysis }: { analysis: WeatherAnalysis }) {
       <p className="eyebrow">FASTEST WEATHER RIDE</p>
       <h3>{formatSpeed(fastest.speed_kmh)}</h3>
       <span>{date}</span>
-      <p>{value(fastest.temperature_c, '°C')} · {value(fastest.wind_kmh, ' km/h wind')} · {value(fastest.precipitation_mm, ' mm rain')}</p>
+      <p>{value(fastest.temperature_c, '°C')} <MetricSeparator /> {value(fastest.wind_kmh, ' km/h wind')} <MetricSeparator /> {value(fastest.precipitation_mm, ' mm rain')}</p>
       <Link className="weather-ride-link" to={`/rides/${fastest.ride_id}`}>Open ride <b>-&gt;</b></Link>
     </article>
   );
@@ -80,7 +81,7 @@ export function WeatherSection({ analysis, error, onRetry }: { analysis: Weather
       <div className="weather-summary">
         <div className="weather-conditions">
           <div className="section-head"><h2>Dry versus wet</h2><span>PERFORMANCE</span></div>
-          <div className="weather-condition-grid">
+          <div className="weather-condition-grid metric-grid">
             <ConditionCard label="Dry" stats={analysis.conditions.dry} />
             <ConditionCard label="Wet" stats={analysis.conditions.wet} />
           </div>
@@ -94,7 +95,7 @@ export function WeatherSection({ analysis, error, onRetry }: { analysis: Weather
             {analysis.directions.map((direction) => (
               <article className="weather-direction-card" key={direction.group_id}>
                 <h3>{direction.label}</h3>
-                <div><DirectionWeather title="Outbound" stats={direction.outbound} /><DirectionWeather title="Return" stats={direction.return} /></div>
+                <div className="metric-grid"><DirectionWeather title="Outbound" stats={direction.outbound} /><DirectionWeather title="Return" stats={direction.return} /></div>
               </article>
             ))}
           </div>

@@ -1,4 +1,19 @@
 /* Shared hierarchy and state treatments for the navigable dashboard. */
+.metric-separator {
+  display: inline-block;
+  margin-inline: .35em;
+}
+
+/* Keep metric text clear of the fine rules used to divide stat cards. */
+.metric-grid {
+  --metric-cell-inline-padding: 10px;
+}
+
+.metric-grid > div,
+.metric-grid > article {
+  padding-inline: var(--metric-cell-inline-padding);
+}
+
 .page-header {
   display: flex;
   align-items: end;
@@ -1115,6 +1130,10 @@ select:focus-visible,
 }
 
 @media (max-width: 800px) {
+  .metric-grid {
+    --metric-cell-inline-padding: 8px;
+  }
+
   .page-header {
     display: block;
     margin-bottom: 30px;

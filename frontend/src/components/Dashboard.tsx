@@ -11,6 +11,7 @@ import { CommuteSection } from './Commutes';
 import { SegmentsSection } from './Segments';
 import { ActivitySection } from './Activity';
 import { WeatherSection } from './Weather';
+import { MetricSeparator } from './MetricSeparator';
 
 const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const emptyAssignments: Record<string, RouteAssignment> = {};
@@ -61,8 +62,8 @@ function Header({ count, updated, dataUpdated, loading, notice, onRefresh }: Hea
       <div className="brand"><span className="brand-mark">R</span><span>RIDE LEDGER</span></div>
       <div className="top-meta">
         <span className="live-dot" aria-hidden="true" />
-        <span>{count} rides · {checkedText}</span>
-        {dataText && <span className="data-updated" title={new Date(dataUpdated || '').toLocaleString()}>· {dataText}</span>}
+        <span>{count} rides <MetricSeparator /> {checkedText}</span>
+        {dataText && <span className="data-updated" title={new Date(dataUpdated || '').toLocaleString()}><MetricSeparator /> {dataText}</span>}
         {notice && <span className="sync-notice" role="status">{notice}</span>}
         <button type="button" onClick={onRefresh} disabled={loading} aria-label={loading ? 'Refreshing archive' : 'Refresh archive'}>{loading ? 'Checking' : 'Refresh'}</button>
       </div>
@@ -289,9 +290,9 @@ function AllRoutesSection({ routes, rides, groups, selectedGroupId, selectedRout
         <span>High {metric === 'speed' ? `${metricRange.max.toFixed(1)} km/h` : `${metricRange.max.toFixed(0)} m`}</span>
       </div>}
       {selectedRide ? (
-        <div className="route-selection" aria-live="polite"><span>Selected ride · {selectedRouteGroup?.label ?? 'Unassigned route'}{selectedDirection ? ` · ${selectedDirection}` : ''} · {formatWorkoutTitle(selectedRide.date)} · {formatSpeed(selectedRide.average_speed_kmh)}{selectedRide.weather && ` · ${selectedRide.weather.temperature_c ?? '—'}°C`}</span><Link to={`/rides/${selectedRide.id}`}>Open ride <b>-&gt;</b></Link></div>
+        <div className="route-selection" aria-live="polite"><span>Selected ride <MetricSeparator /> {selectedRouteGroup?.label ?? 'Unassigned route'}{selectedDirection && <><MetricSeparator /> {selectedDirection}</>} <MetricSeparator /> {formatWorkoutTitle(selectedRide.date)} <MetricSeparator /> {formatSpeed(selectedRide.average_speed_kmh)}{selectedRide.weather && <><MetricSeparator /> {selectedRide.weather.temperature_c ?? '—'}°C</>}</span><Link to={`/rides/${selectedRide.id}`}>Open ride <b>-&gt;</b></Link></div>
       ) : selectedGroup ? (
-        <div className="route-selection" aria-live="polite"><span>{selectedGroup.label} · {selectedGroup.total_rides} rides selected</span><button type="button" onClick={() => { onSelectGroup(null); onSelectRoute(null); }}>Clear focus</button></div>
+        <div className="route-selection" aria-live="polite"><span>{selectedGroup.label} <MetricSeparator /> {selectedGroup.total_rides} rides selected</span><button type="button" onClick={() => { onSelectGroup(null); onSelectRoute(null); }}>Clear focus</button></div>
       ) : <p className="chart-note">Click a track to inspect one ride. Speed and elevation layers include a low-to-high legend; group colors remain available in the route notebook below.</p>}
     </section>
   );
@@ -306,7 +307,7 @@ function InsightsSection({ insights, error, onRetry }: { insights: Insights | nu
     <section className="insights">
       {error && <AnalyticsErrorNotice message={error} onRetry={onRetry} />}
       <div className="chart-card">
-        <div className="section-head"><h2>Route segments</h2><span>AVERAGE SPEED · ROUTE PROGRESS</span></div>
+        <div className="section-head"><h2>Route segments</h2><span>AVERAGE SPEED <MetricSeparator /> ROUTE PROGRESS</span></div>
         <div className="chart-wrap"><SegmentChart values={segments} /></div>
         <p className="chart-note">Each ride is split into ten equal distance segments. This shows where your repeated route tends to slow down or open up.</p>
       </div>
@@ -337,7 +338,7 @@ function InsightHighlights({ insights, weather }: { insights: Insights; weather:
   ];
   return (
     <section className="insight-highlights" id="insight-highlights">
-      <div className="section-head"><h2>Highlights</h2><span>{activeDays} ACTIVE DAYS · {weather ? `${weather.available_rides}/${weather.total_rides} WEATHER LINKED` : 'WEATHER PENDING'}</span></div>
+      <div className="section-head"><h2>Highlights</h2><span>{activeDays} ACTIVE DAYS <MetricSeparator /> {weather ? `${weather.available_rides}/${weather.total_rides} WEATHER LINKED` : 'WEATHER PENDING'}</span></div>
       <div className="highlight-grid">
         {values.map(([label, value, note]) => <article className="highlight" key={label}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>)}
       </div>
@@ -369,7 +370,7 @@ function ArchiveSummaries({ insights }: { insights: Insights }) {
   const periods = period === 'month' ? (insights.monthly_summary ?? []) : (insights.yearly_summary ?? []);
   return (
     <section className="archive-summaries">
-      <div className="section-head"><h2>Archive summaries</h2><span>LOCAL TIME · {insights.timezone}</span></div>
+      <div className="section-head"><h2>Archive summaries</h2><span>LOCAL TIME <MetricSeparator /> {insights.timezone}</span></div>
       <div className="summary-toggle" role="group" aria-label="Summary period">
         <button type="button" className={period === 'month' ? 'active' : ''} aria-pressed={period === 'month'} onClick={() => setPeriod('month')}>Monthly</button>
         <button type="button" className={period === 'year' ? 'active' : ''} aria-pressed={period === 'year'} onClick={() => setPeriod('year')}>Yearly</button>
@@ -403,7 +404,7 @@ function PerformanceSection({ insights }: { insights: Insights }) {
         </div>
       </div>
       <div className="chart-card speed-distribution">
-        <div className="section-head"><h2>Speed distribution</h2><span>KM/H · RECORDED SAMPLES</span></div>
+        <div className="section-head"><h2>Speed distribution</h2><span>KM/H <MetricSeparator /> RECORDED SAMPLES</span></div>
         {insights.speed_distribution.length ? <div className="chart-wrap"><BarChart values={insights.speed_distribution.map((bin) => bin.point_count)} labels={insights.speed_distribution.map((bin) => bin.label)} fill="rgba(77,107,56,.68)" /></div> : <p className="weather-empty">No valid speed samples yet.</p>}
         <p className="chart-note">Each bar counts recorded speed samples; with one-second FIT records this approximates time spent at each pace.</p>
       </div>
@@ -539,7 +540,7 @@ function RideFilters({ filters, dates, directions, resultCount, totalCount, onCh
     <div className="ride-filters">
       <div className="filter-bar">
         <label className="filter-field filter-search">Search<input type="search" value={filters.search} onChange={(event) => update('search', event.currentTarget.value)} placeholder="Date, file, or route" /></label>
-        <button type="button" className="filter-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? 'Hide filters' : 'More filters'}{summary.length ? ` · ${summary.length}` : ''}</button>
+         <button type="button" className="filter-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? 'Hide filters' : 'More filters'}{summary.length ? <><MetricSeparator /> {summary.length}</> : null}</button>
         {summary.length > 0 && <button type="button" className="filter-clear" onClick={onReset}>Clear all</button>}
       </div>
       {summary.length > 0 && <div className="active-filters" aria-label="Active filters">{summary.map((item) => <span key={item}>{item}</span>)}</div>}
@@ -724,7 +725,7 @@ function PlaybackControls({ track, weather, index, playing, onToggle, onReset, o
         <b>{point ? formatSpeed(point.speed == null ? null : point.speed * 3.6) : '—'}</b>
         <b>{point?.altitude == null ? '—' : `${point.altitude.toFixed(0)} m`}</b>
       </div>
-      {weather && <p className="chart-note">Archive weather average: {weather.temperature_c ?? '—'}°C · {weather.wind_kmh ?? '—'} km/h wind · {weather.precipitation_mm ?? '—'} mm rain.</p>}
+      {weather && <p className="chart-note">Archive weather average: {weather.temperature_c ?? '—'}°C <MetricSeparator /> {weather.wind_kmh ?? '—'} km/h wind <MetricSeparator /> {weather.precipitation_mm ?? '—'} mm rain.</p>}
     </section>
   );
 }
@@ -808,16 +809,16 @@ function DetailPanel({ selectedId, ride, loading, error, assignment, returnSearc
     <aside ref={detailRef} className="detail">
       <div className="detail-view">
         <Link className="back-link" to={`/rides${returnSearch}`}>-&gt; Back to rides</Link>
-        <div className="detail-head"><div><p>WORKOUT{assignment && <> · <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>{assignment.group_id && <span className="detail-route-label">{assignment.label}</span>}</>}</p><h2>{fullDate}</h2></div>{ride.data_quality?.status === 'warning' && <span className="quality-badge">{ride.data_quality.warning_count} checks</span>}</div>
+        <div className="detail-head"><div><p>WORKOUT{assignment && <> <MetricSeparator /> <span className={`direction-tag ${assignment.direction}`}>{assignment.direction}</span>{assignment.group_id && <span className="detail-route-label">{assignment.label}</span>}</>}</p><h2>{fullDate}</h2></div>{ride.data_quality?.status === 'warning' && <span className="quality-badge">{ride.data_quality.warning_count} checks</span>}</div>
         <PrimaryDetailStats ride={ride} />
         <DetailChapter id="route" key={`${ride.id}-route`} title="Route and playback" label="01 · SPATIAL CONTEXT" defaultOpen>
           <PlaybackMap key={ride.id} ride={ride} highlightedPoint={highlightedPoint} />
         </DetailChapter>
         <DetailChapter id="pace" key={`${ride.id}-pace`} title="Pace and speed" label="02 · PERFORMANCE">
-          <div className="speed-chart"><div className="section-head"><h2>Average speed</h2><span>KM/H · OVER TIME</span></div><div className="chart-wrap"><SpeedChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
+          <div className="speed-chart"><div className="section-head"><h2>Average speed</h2><span>KM/H <MetricSeparator /> OVER TIME</span></div><div className="chart-wrap"><SpeedChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
         </DetailChapter>
         <DetailChapter id="elevation" key={`${ride.id}-elevation`} title="Elevation" label="03 · TERRAIN">
-          <div className="elevation-chart"><div className="section-head"><h2>Elevation profile</h2><span>METRES · ROUTE PROGRESS</span></div><div className="chart-wrap"><ElevationChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
+          <div className="elevation-chart"><div className="section-head"><h2>Elevation profile</h2><span>METRES <MetricSeparator /> ROUTE PROGRESS</span></div><div className="chart-wrap"><ElevationChart track={ride.track} onPointHover={(point) => setHighlight(point ? { rideId: ride.id, point } : null)} /></div></div>
         </DetailChapter>
         <DetailChapter id="timing" key={`${ride.id}-timing`} title="Timing and effort" label="04 · RIDE METRICS">
           <DetailStats ride={ride} />
@@ -828,7 +829,7 @@ function DetailPanel({ selectedId, ride, loading, error, assignment, returnSearc
         </DetailChapter>
         <DetailChapter id="source" key={`${ride.id}-source`} title="Data quality and original file" label="06 · SOURCE">
           <QualityPanel ride={ride} />
-          <p className="route-note">{ride.points.toLocaleString()} GPS points · {ride.temperature_c ?? '—'}°C computer temperature · {ride.file}</p>
+          <p className="route-note">{ride.points.toLocaleString()} GPS points <MetricSeparator /> {ride.temperature_c ?? '—'}°C computer temperature <MetricSeparator /> {ride.file}</p>
         </DetailChapter>
        </div>
        {error && <p className="route-note">Could not load selected workout: {error.message}</p>}

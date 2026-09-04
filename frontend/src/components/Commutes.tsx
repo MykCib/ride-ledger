@@ -24,7 +24,7 @@ function PerformanceBlock({ title, performance }: { title: string; performance: 
   return (
     <div className="commute-direction">
       <div className="commute-direction-head"><h3>{title}</h3><span>{performance.count} RIDES</span></div>
-      <div className="commute-metrics">
+      <div className="commute-metrics metric-grid">
         <div><span>Avg speed</span><b>{formatSpeed(performance.average_speed_kmh)}</b></div>
         <div><span>Moving time</span><b>{formatTime(performance.average_moving_seconds)}</b></div>
         <div><span>Avg duration</span><b>{formatDuration(performance.average_commute_seconds)}</b></div>

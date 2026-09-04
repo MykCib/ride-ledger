@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { formatDuration, formatSpeed } from '../format';
 import type { RouteSegment } from '../types';
 import { SegmentsMap } from './Maps';
+import { MetricSeparator } from './MetricSeparator';
 
 interface SegmentGroup {
   key: string;
@@ -57,7 +58,7 @@ export function SegmentsSection({ segmentCount, segments, selectedGroupId = null
       <div className="segment-map-panel">
         <SegmentsMap segments={segments} focusGroupId={selectedGroupId} selectedSegmentId={selectedSegmentId} onSelectSegment={setSelectedSegmentId} />
         <div className="segment-map-note" aria-live="polite">
-          {selectedSegment ? <><span>Selected {selectedSegment.label} · {selectedSegment.progress_start}-{selectedSegment.progress_end}% · {formatSpeed(selectedSegment.average_speed_kmh)}</span>{selectedSegment.record_ride_id && <Link to={`/rides/${selectedSegment.record_ride_id}`}>Open record ride <b>-&gt;</b></Link>}</> : <span>Select a segment on the map or in the tables below.</span>}
+          {selectedSegment ? <><span>Selected {selectedSegment.label} <MetricSeparator /> {selectedSegment.progress_start}-{selectedSegment.progress_end}% <MetricSeparator /> {formatSpeed(selectedSegment.average_speed_kmh)}</span>{selectedSegment.record_ride_id && <Link to={`/rides/${selectedSegment.record_ride_id}`}>Open record ride <b>-&gt;</b></Link>}</> : <span>Select a segment on the map or in the tables below.</span>}
         </div>
       </div>
       <div className="segment-groups">
@@ -65,7 +66,7 @@ export function SegmentsSection({ segmentCount, segments, selectedGroupId = null
           <article className={`segment-card${selectedGroupId === group.segments[0]?.group_id ? ' selected' : ''}`} key={group.key}>
             <div className="segment-card-head">
               <div><p className="eyebrow">REPEATED SECTION</p><h3>{group.label}</h3></div>
-              <span className={`direction-tag ${group.direction}`}>{group.direction} · {group.totalRides} RIDES</span>
+              <span className={`direction-tag ${group.direction}`}>{group.direction} <MetricSeparator /> {group.totalRides} RIDES</span>
             </div>
             <div className="segment-table-head"><span /><span>PROGRESS</span><span>LENGTH</span><span>AVG / BEST</span><span>RIDES</span></div>
             <div className="segment-rows">
