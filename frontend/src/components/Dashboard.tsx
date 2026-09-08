@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react';
 import { Link, NavLink, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { getCommutes, getInsights, getRoutes, getSegments, getWeather, getWorkouts, renameCommuteLocation } from '../api';
+import { getCommutes, getInsights, getRoutes, getSegments, getStatus, getWeather, getWorkouts, renameCommuteLocation } from '../api';
 import { clearDetailCache, prefetchDetail } from '../detailCache';
 import { useWorkoutDetail } from '../hooks/useWorkoutDetail';
 import { formatClock, formatDuration, formatSpeed, formatTime, formatVerticalRate, formatWorkoutTitle } from '../format';
@@ -51,10 +51,11 @@ interface HeaderProps {
   dataUpdated: string | null;
   loading: boolean;
   notice: string | null;
+  indexing: boolean;
   onRefresh: () => void;
 }
 
-function Header({ count, updated, dataUpdated, loading, notice, onRefresh }: HeaderProps) {
+function Header({ count, updated, dataUpdated, loading, notice, indexing, onRefresh }: HeaderProps) {
   const checkedText = updated ? `checked ${new Date(updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'loading archive';
   const dataText = dataUpdated ? `files ${new Date(dataUpdated).toLocaleDateString([], { month: 'short', day: 'numeric' })}` : null;
   return (
@@ -64,6 +65,7 @@ function Header({ count, updated, dataUpdated, loading, notice, onRefresh }: Hea
         <span className="live-dot" aria-hidden="true" />
         <span>{count} rides <MetricSeparator /> {checkedText}</span>
         {dataText && <span className="data-updated" title={new Date(dataUpdated || '').toLocaleString()}><MetricSeparator /> {dataText}</span>}
+        {indexing && <span className="sync-notice" role="status">Indexing new ride…</span>}
         {notice && <span className="sync-notice" role="status">{notice}</span>}
         <button type="button" onClick={onRefresh} disabled={loading} aria-label={loading ? 'Refreshing archive' : 'Refresh archive'}>{loading ? 'Checking' : 'Refresh'}</button>
       </div>
@@ -909,8 +911,10 @@ export function DashboardPage({ page }: { page: DashboardPageName }) {
   const [analyticsStarted, setAnalyticsStarted] = useState(false);
   const [analyticsErrors, setAnalyticsErrors] = useState<AnalyticsErrors>({});
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [indexing, setIndexing] = useState(false);
   const previousCount = useRef<number | null>(null);
   const previousDataUpdated = useRef<string | null>(null);
+  const statusRef = useRef<{ total: number | null; dataUpdated: string | null }>({ total: null, dataUpdated: null });
   const loadingRidesRef = useRef(true);
   const rideCountRef = useRef(0);
 
@@ -968,10 +972,38 @@ export function DashboardPage({ page }: { page: DashboardPageName }) {
   }, [loadingRides]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    const checkStatus = () => {
+      getStatus(controller.signal)
+        .then((status) => {
+          if (!active) return;
+          setIndexing(Boolean(status.dirty));
+          const prev = statusRef.current;
+          if (prev.total !== null && status.total !== prev.total) {
+            setRefreshKey((value) => value + 1);
+          } else if (
+            prev.dataUpdated !== null &&
+            status.data_updated !== prev.dataUpdated &&
+            !loadingRidesRef.current
+          ) {
+            setRefreshKey((value) => value + 1);
+          }
+          statusRef.current = { total: status.total, dataUpdated: status.data_updated };
+        })
+        .catch(() => {
+          // Status is best-effort; heavy fetches still run on manual refresh.
+        });
+    };
+    checkStatus();
     const interval = window.setInterval(() => {
-      if (!loadingRidesRef.current) setRefreshKey((value) => value + 1);
-    }, 60_000);
-    return () => window.clearInterval(interval);
+      if (!loadingRidesRef.current) checkStatus();
+    }, 10_000);
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearInterval(interval);
+    };
   }, []);
 
   const validRideId = page === 'rides' && rideId && visibleRides.some((ride) => ride.id === rideId) ? rideId : undefined;
@@ -1074,7 +1106,7 @@ export function DashboardPage({ page }: { page: DashboardPageName }) {
 
   return (
     <>
-      <Header count={rides.length} updated={updated} dataUpdated={dataUpdated} loading={loadingRides} notice={syncNotice} onRefresh={handleRefresh} />
+      <Header count={rides.length} updated={updated} dataUpdated={dataUpdated} loading={loadingRides} notice={syncNotice} indexing={indexing} onRefresh={handleRefresh} />
       <Navigation ridesSearch={ridesSearch} />
       <main className={`shell page-shell page-${page}`}>
         <PageIntro page={page} />

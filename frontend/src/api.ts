@@ -40,6 +40,10 @@ export async function renameCommuteLocation(locationId: string, name: string): P
   return response.json() as Promise<CommuteAnalysis>;
 }
 
+export async function getStatus(signal?: AbortSignal): Promise<{ ready: boolean; total: number; indexed: number; dirty: boolean; data_updated: string | null; updated: string | null }> {
+  return request('/api/status', signal);
+}
+
 export async function getInsights(signal?: AbortSignal): Promise<Insights> {
   return request('/api/insights', signal);
 }
