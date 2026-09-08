@@ -89,9 +89,32 @@ cd ~/www/ride-ledger
 .venv/bin/python -m flask --app web.app run --host 0.0.0.0 --port 8124
 ```
 
-Open `http://localhost:8124` or `http://SERVER-IP:8124`. The dashboard checks
-for new FIT files automatically every minute; `Refresh` can be used for an
-immediate check.
+Open `http://localhost:8124` or `http://SERVER-IP:8124`. The dashboard polls the
+lightweight `/api/status` endpoint every 10 seconds and reloads data only when
+the ride count or file timestamps change; `Refresh` can be used for an
+immediate check. An “Indexing new ride…” badge appears while the background
+indexer is working.
+
+## Ride Index (SQLite)
+
+FIT parsing happens once per file in a background indexer, not on every API
+request. Derived analytics are served from `data/ledger.db` (SQLite, stdlib
+only — no new dependencies):
+
+```sh
+.venv/bin/python -m host.indexer --full        # rebuild everything (run once after upgrading)
+.venv/bin/python -m host.indexer --incremental # upsert new/changed files only (default)
+.venv/bin/python -m host.indexer --check       # exit 0 if the DB covers all FITs, else 2
+.venv/bin/python -m host.indexer --ride <id>   # re-ingest a single ride
+```
+
+The XOSS watcher runs `--incremental` automatically after each sync (disable
+with `INDEX_ON_SYNC=0`). New files are ingested incrementally, so API
+responses stay in the millisecond range instead of re-parsing the archive.
+`LEDGER_DB` overrides the database path (default `data/ledger.db`). If the
+database is missing or stale, the API falls back to the legacy FIT-parsing
+path automatically. Insights are additionally cached in
+`data/ledger_insights_cache.json` so restarts stay fast.
 
 Run the dashboard permanently as a user service:
 

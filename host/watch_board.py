@@ -15,9 +15,10 @@ except ImportError:
 
 RETRY_SECONDS = float(os.environ.get("XOSS_RETRY_SECONDS", "60"))
 COOLDOWN_SECONDS = float(os.environ.get("XOSS_COOLDOWN_SECONDS", "3600"))
+INDEX_ON_SYNC = os.environ.get("INDEX_ON_SYNC", "1").strip() not in ("0", "false", "no", "")
 
 
-def sync_cycle(root, python, weather):
+def sync_cycle(root, python, weather, indexer=None):
     sync_failed = False
     try:
         new_files = list(sync_board())
@@ -43,6 +44,16 @@ def sync_cycle(root, python, weather):
         print(f"Weather enrichment exited with status {result.returncode}", flush=True)
     except Exception as error:
         print(f"Weather enrichment error: {error}", file=sys.stderr, flush=True)
+
+    if INDEX_ON_SYNC:
+        try:
+            indexer_path = Path(indexer) if indexer else Path(root) / "host" / "indexer.py"
+            index_result = subprocess.run(
+                [str(python), str(indexer_path), "--incremental"], cwd=root
+            )
+            print(f"Ride indexer exited with status {index_result.returncode}", flush=True)
+        except Exception as error:
+            print(f"Ride indexer error: {error}", file=sys.stderr, flush=True)
 
     print(f"XOSS polling paused for {COOLDOWN_SECONDS:g} seconds", flush=True)
     return COOLDOWN_SECONDS

@@ -10,6 +10,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from flask import Flask, jsonify, render_template, request, send_file
 from fitparse import FitFile
 
+from web.ledger_db import db_mtime_ns as _ledger_file_mtime
+from web.ledger_db import db_path_for as _ledger_db_path_for
+from web.ledger_db import is_ready as _ledger_is_ready
+from web.ledger_db import load_detail as _ledger_load_detail
+from web.ledger_db import load_status as _ledger_load_status
+from web.ledger_db import load_tracks as _ledger_load_tracks
+from web.ledger_db import load_workouts as _ledger_load_workouts
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 app = Flask(__name__)
@@ -30,6 +38,21 @@ _weather_analysis_cache = None
 _weather_analysis_signature = None
 _detail_cache = {}
 _routes_lock = Lock()
+_db_workouts_cache = None
+_db_workouts_key = None
+_db_routes_cache = None
+_db_routes_key = None
+_db_tracks_cache = None
+_db_tracks_key = None
+_db_stops_cache = None
+_db_commutes_cache = None
+_db_commutes_key = None
+_db_segments_cache = None
+_db_segments_key = None
+_db_weather_cache = None
+_db_weather_key = None
+_db_insights_cache = None
+_db_insights_key = None
 WORKOUTS_CACHE_VERSION = 5
 COMMUTES_CACHE_VERSION = 4
 SEGMENTS_CACHE_VERSION = 2
@@ -37,6 +60,56 @@ WEATHER_ANALYSIS_CACHE_VERSION = 2
 INSIGHTS_CACHE_VERSION = 5
 ROUTES_CACHE_VERSION = 2
 LOCATION_NAMES_PATH = DATA / "location_names.json"
+LEDGER_DB_VERSION = 1
+
+
+def _ledger_db_path():
+    try:
+        return _ledger_db_path_for(DATA)
+    except Exception:
+        return DATA / "ledger.db"
+
+
+def _ledger_ready():
+    try:
+        return _ledger_is_ready(_ledger_db_path())
+    except Exception:
+        return False
+
+
+def _location_names_mtime():
+    try:
+        return LOCATION_NAMES_PATH.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _db_base_key():
+    return _ledger_file_mtime(_ledger_db_path())
+
+
+def _bust_db_caches():
+    global _db_workouts_cache, _db_workouts_key, _db_routes_cache, _db_routes_key
+    global _db_tracks_cache, _db_tracks_key, _db_stops_cache
+    global _db_commutes_cache, _db_commutes_key, _db_segments_cache, _db_segments_key
+    global _db_weather_cache, _db_weather_key, _db_insights_cache, _db_insights_key
+    global _detail_cache
+    _db_workouts_cache = None
+    _db_workouts_key = None
+    _db_routes_cache = None
+    _db_routes_key = None
+    _db_tracks_cache = None
+    _db_tracks_key = None
+    _db_stops_cache = None
+    _db_commutes_cache = None
+    _db_commutes_key = None
+    _db_segments_cache = None
+    _db_segments_key = None
+    _db_weather_cache = None
+    _db_weather_key = None
+    _db_insights_cache = None
+    _db_insights_key = None
+    _detail_cache = {}
 DEFAULT_ANALYTICS_TIMEZONE = "Europe/Vilnius"
 STOP_SPEED_MPS = 0.5
 MIN_STOP_SECONDS = 5
@@ -709,18 +782,30 @@ def build_route_segments(groups, tracks):
     return {"segment_count": ROUTE_SEGMENT_COUNT, "segments": segments}
 
 
-def weather_records(items):
+def weather_records(items, weather_by_id=None):
     records = []
     for item in items:
-        weather_path = DATA / "weather_cache" / f"{item.get('id')}.json"
-        if not weather_path.is_file():
-            continue
-        try:
-            payload = json.loads(weather_path.read_text())
-        except (OSError, ValueError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
+        if weather_by_id is not None:
+            payload = weather_by_id.get(item.get("id"))
+            if payload is None:
+                # Fall back to embedded payload stored by the DB loader.
+                payload = item.get("_weather_payload")
+            if not isinstance(payload, dict):
+                continue
+        else:
+            embedded = item.get("_weather_payload")
+            if isinstance(embedded, dict):
+                payload = embedded
+            else:
+                weather_path = DATA / "weather_cache" / f"{item.get('id')}.json"
+                if not weather_path.is_file():
+                    continue
+                try:
+                    payload = json.loads(weather_path.read_text())
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
         weather = {
             field: value
             for field in ("temperature_c", "wind_kmh", "precipitation_mm", "weather_code")
@@ -780,8 +865,8 @@ def weather_bins(records, field, width, suffix):
     return result
 
 
-def build_weather_analysis(items, commute):
-    records = weather_records(items)
+def build_weather_analysis(items, commute, weather_by_id=None):
+    records = weather_records(items, weather_by_id=weather_by_id)
     by_id = {record["id"]: record for record in records}
     dry = [record for record in records if record["weather"].get("precipitation_mm") == 0]
     wet = [record for record in records if (record["weather"].get("precipitation_mm") or 0) > 0]
@@ -1282,7 +1367,117 @@ def cached_weather_summary(workout_id):
     return weather or None
 
 
+def _db_weather_summary_from_payload(payload):
+    if not isinstance(payload, dict):
+        return None
+    weather = {
+        field: finite_number(payload.get(field))
+        for field in ("temperature_c", "feels_like_c", "wind_kmh", "precipitation_mm")
+    }
+    weather = {field: value for field, value in weather.items() if value is not None}
+    return weather or None
+
+
+def _db_workouts():
+    global _db_workouts_cache, _db_workouts_key
+    db_path = _ledger_db_path()
+    key = _db_base_key()
+    if _db_workouts_cache is not None and key == _db_workouts_key:
+        return _db_workouts_cache
+    items, weather_by_id, _meta = _ledger_load_workouts(db_path)
+    result = []
+    for item in items:
+        clean = {k: v for k, v in item.items() if not k.startswith("_")}
+        result.append(clean)
+    _db_workouts_cache = result
+    _db_workouts_key = key
+    # Stash weather payloads on the cached items for downstream reuse.
+    _db_workouts_cache_weather = weather_by_id
+    _db_workouts.cache_weather = _db_workouts_cache_weather  # type: ignore[attr-defined]
+    return result
+
+
+def _db_weather_by_id():
+    # Ensure workouts are loaded so weather payloads are available.
+    _db_workouts()
+    return getattr(_db_workouts, "cache_weather", {}) or {}
+
+
+def _build_routes_from_tracks(items, tracks, weather_by_id):
+    routes = []
+    for item in items:
+        points = tracks.get(item["id"], [])
+        stride = max(1, (len(points) + 299) // 300)
+        sampled = points[::stride] if points else []
+        if points and sampled and sampled[-1] is not points[-1]:
+            sampled.append(points[-1])
+        payload = weather_by_id.get(item["id"])
+        if payload is None:
+            payload = item.get("_weather_payload")
+        routes.append({
+            "id": item["id"],
+            "date": item.get("date"),
+            "points": [[point["lat"], point["lon"]] for point in sampled],
+            "samples": [{
+                "lat": point["lat"],
+                "lon": point["lon"],
+                "speed_kmh": number(
+                    finite_number(point.get("speed")) * 3.6
+                    if finite_number(point.get("speed")) is not None else None,
+                    1,
+                ),
+                "elevation_m": point.get("altitude"),
+            } for point in sampled],
+            "weather": _db_weather_summary_from_payload(payload),
+        })
+    return routes
+
+
+def _db_route_data():
+    global _db_routes_cache, _db_routes_key, _db_tracks_cache, _db_tracks_key, _db_stops_cache
+    db_path = _ledger_db_path()
+    key = _db_base_key()
+    if (
+        _db_routes_cache is not None
+        and _db_tracks_cache is not None
+        and key == _db_routes_key
+        and key == _db_tracks_key
+    ):
+        return _db_routes_cache, _db_tracks_cache
+    items, weather_by_id, _meta = _ledger_load_workouts(db_path)
+    tracks, stops = _ledger_load_tracks(db_path)
+    routes = _build_routes_from_tracks(items, tracks, weather_by_id)
+    _db_routes_cache = routes
+    _db_routes_key = key
+    _db_tracks_cache = tracks
+    _db_tracks_key = key
+    _db_stops_cache = stops
+    return routes, tracks
+
+
+def _db_data_updated_iso():
+    # Match legacy semantics exactly: newest FIT file mtime. This is a
+    # stat-only walk (no FIT parsing), so it stays in the millisecond range.
+    try:
+        from datetime import timezone as _tz
+
+        newest = max(
+            (p.stat().st_mtime for p in DATA.glob("*.fit")),
+            default=None,
+        )
+        if newest is not None:
+            return datetime.fromtimestamp(newest, _tz.utc).isoformat()
+    except OSError:
+        pass
+    return None
+
+
 def workouts():
+    if _ledger_ready():
+        try:
+            return _db_workouts()
+        except Exception as error:
+            app.logger.warning("ledger.db read failed, using legacy path: %s", error)
     global _workouts_cache, _workouts_signature
     paths = sorted(DATA.glob("*.fit"), reverse=True)
     signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
@@ -1331,6 +1526,24 @@ def frontend_route(frontend_path):
 
 @app.get("/api/workouts")
 def workout_list():
+    if _ledger_ready():
+        try:
+            items = _db_workouts()
+            weather_by_id = _db_weather_by_id()
+            enriched = [
+                {**item, "weather": _db_weather_summary_from_payload(
+                    weather_by_id.get(item["id"], item.get("_weather_payload"))
+                )}
+                for item in items
+            ]
+            return jsonify({
+                "workouts": enriched,
+                "count": len(enriched),
+                "updated": datetime.now(timezone.utc).isoformat(),
+                "data_updated": _db_data_updated_iso(),
+            })
+        except Exception as error:
+            app.logger.warning("ledger.db workouts failed, using legacy path: %s", error)
     items = workouts()
     enriched = [{**item, "weather": cached_weather_summary(item["id"])} for item in items]
     data_updated = max(
@@ -1361,6 +1574,18 @@ def workout_download(workout_id):
 
 @app.get("/api/workouts/<workout_id>")
 def workout_detail(workout_id):
+    if _ledger_ready():
+        try:
+            detail = _ledger_load_detail(_ledger_db_path(), workout_id)
+            if detail is not None:
+                signature = (detail.pop("_size", None), detail.pop("_mtime_ns", None))
+                cached = _detail_cache.get(workout_id)
+                if cached and cached[0] == signature:
+                    return jsonify(cached[1])
+                _detail_cache[workout_id] = (signature, detail)
+                return jsonify(detail)
+        except Exception as error:
+            app.logger.warning("ledger.db detail failed, using legacy path: %s", error)
     path = (DATA / f"{workout_id}.fit").resolve()
     if not path.is_file() or path.parent != DATA.resolve():
         return jsonify({"error": "Workout not found"}), 404
@@ -1383,6 +1608,13 @@ def workout_detail(workout_id):
 
 
 def route_overlay_data():
+    if _ledger_ready():
+        try:
+            with _routes_lock:
+                routes, _tracks = _db_route_data()
+                return routes
+        except Exception as error:
+            app.logger.warning("ledger.db routes failed, using legacy path: %s", error)
     with _routes_lock:
         return _route_overlay_data()
 
@@ -1445,6 +1677,13 @@ def _route_overlay_data():
 
 
 def route_track_data():
+    if _ledger_ready():
+        try:
+            with _routes_lock:
+                _routes, tracks = _db_route_data()
+                return tracks
+        except Exception as error:
+            app.logger.warning("ledger.db tracks failed, using legacy path: %s", error)
     with _routes_lock:
         return _route_track_data()
 
@@ -1472,6 +1711,18 @@ def route_overlay():
 
 
 def commute_analysis_data():
+    if _ledger_ready():
+        try:
+            global _db_commutes_cache, _db_commutes_key
+            timezone_name, _ = analytics_timezone()
+            key = (_db_base_key(), _location_names_mtime(), timezone_name)
+            if _db_commutes_cache is not None and key == _db_commutes_key:
+                return _db_commutes_cache
+            _db_commutes_cache = build_commute_analysis(_db_workouts(), _db_route_data()[0])
+            _db_commutes_key = key
+            return _db_commutes_cache
+        except Exception as error:
+            app.logger.warning("ledger.db commutes failed, using legacy path: %s", error)
     global _commutes_cache, _commutes_signature
     timezone_name, _ = analytics_timezone()
     paths = sorted(DATA.glob("*.fit"), reverse=True)
@@ -1503,6 +1754,18 @@ def commute_analysis():
 
 
 def segment_analysis_data():
+    if _ledger_ready():
+        try:
+            global _db_segments_cache, _db_segments_key
+            key = (_db_base_key(), _location_names_mtime())
+            if _db_segments_cache is not None and key == _db_segments_key:
+                return _db_segments_cache
+            commute = commute_analysis_data()
+            _db_segments_cache = build_route_segments(commute["groups"], route_track_data())
+            _db_segments_key = key
+            return _db_segments_cache
+        except Exception as error:
+            app.logger.warning("ledger.db segments failed, using legacy path: %s", error)
     global _segments_cache, _segments_signature
     paths = sorted(DATA.glob("*.fit"), reverse=True)
     signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in paths)
@@ -1533,6 +1796,21 @@ def route_segments():
 
 
 def weather_analysis_data():
+    if _ledger_ready():
+        try:
+            global _db_weather_cache, _db_weather_key
+            timezone_name, _ = analytics_timezone()
+            key = (_db_base_key(), _location_names_mtime(), timezone_name)
+            if _db_weather_cache is not None and key == _db_weather_key:
+                return _db_weather_cache
+            items = _db_workouts()
+            _db_weather_cache = build_weather_analysis(
+                items, commute_analysis_data(), weather_by_id=_db_weather_by_id()
+            )
+            _db_weather_key = key
+            return _db_weather_cache
+        except Exception as error:
+            app.logger.warning("ledger.db weather failed, using legacy path: %s", error)
     global _weather_analysis_cache, _weather_analysis_signature
     timezone_name, _ = analytics_timezone()
     paths = sorted(DATA.glob("*.fit"), reverse=True)
@@ -1587,6 +1865,7 @@ def rename_commute_location(location_id):
     _segments_signature = None
     _weather_analysis_cache = None
     _weather_analysis_signature = None
+    _bust_db_caches()
     cache_path = DATA / "commutes_cache.json"
     try:
         cache_path.unlink()
@@ -1605,6 +1884,33 @@ def rename_commute_location(location_id):
 
 @app.get("/api/insights")
 def workout_insights():
+    if _ledger_ready():
+        try:
+            global _db_insights_cache, _db_insights_key
+            timezone_name, _ = analytics_timezone()
+            db_mtime = _db_base_key()
+            key = (db_mtime, timezone_name)
+            if _db_insights_cache is not None and key == _db_insights_key:
+                return jsonify(_db_insights_cache)
+            disk_cache = DATA / "ledger_insights_cache.json"
+            if disk_cache.is_file():
+                try:
+                    payload = json.loads(disk_cache.read_text())
+                    if payload.get("key") == [db_mtime, timezone_name] and "insights" in payload:
+                        _db_insights_cache = payload["insights"]
+                        _db_insights_key = key
+                        return jsonify(_db_insights_cache)
+                except (ValueError, OSError, KeyError, TypeError):
+                    pass
+            _db_insights_cache = build_workout_insights(_db_workouts(), tracks=route_track_data())
+            _db_insights_key = key
+            try:
+                disk_cache.write_text(json.dumps({"key": [db_mtime, timezone_name], "insights": _db_insights_cache}))
+            except OSError as error:
+                app.logger.warning("could not persist insights cache: %s", error)
+            return jsonify(_db_insights_cache)
+        except Exception as error:
+            app.logger.warning("ledger.db insights failed, using legacy path: %s", error)
     global _insights_cache, _insights_signature
     timezone_name, _ = analytics_timezone()
     signature = tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in sorted(DATA.glob("*.fit")))
@@ -1625,6 +1931,22 @@ def workout_insights():
     _insights_signature = signature
     cache_path.write_text(json.dumps({"version": INSIGHTS_CACHE_VERSION, "signature": signature, "insights": _insights_cache}))
     return jsonify(_insights_cache)
+
+
+@app.get("/api/status")
+def ledger_status():
+    try:
+        return jsonify(_ledger_load_status(_ledger_db_path(), DATA))
+    except Exception as error:
+        app.logger.warning("status failed: %s", error)
+        return jsonify({
+            "ready": False,
+            "total": 0,
+            "indexed": 0,
+            "dirty": True,
+            "data_updated": None,
+            "updated": None,
+        })
 
 
 def speed_distribution(buckets):
@@ -1712,7 +2034,7 @@ def period_summaries(items, timezone_value, period):
     return result
 
 
-def build_workout_insights(items):
+def build_workout_insights(items, tracks=None):
     timezone_name, timezone_value = analytics_timezone()
     bins = [[] for _ in range(10)]
     speed_buckets = {}
@@ -1720,6 +2042,24 @@ def build_workout_insights(items):
     weekdays = [0] * 7
     departure_hours = [0] * 24
     calendar = {}
+
+    def _track_for(item):
+        if tracks is not None:
+            # DB path passes {ride_id: [points]}. Tests with mocked
+            # parse_workout pass None and use the legacy branch below.
+            candidate = tracks.get(item.get("id"))
+            if isinstance(candidate, dict) and "track" in candidate:
+                return candidate.get("track") or []
+            if isinstance(candidate, list):
+                return candidate
+            candidate = tracks.get(item.get("file"))
+            if isinstance(candidate, dict) and "track" in candidate:
+                return candidate.get("track") or []
+            if isinstance(candidate, list):
+                return candidate
+            return []
+        return parse_workout(DATA / item["file"], include_track=True)["track"]
+
     for item in items:
         date = item_datetime(item)
         if date is not None:
@@ -1733,7 +2073,7 @@ def build_workout_insights(items):
             if distance is not None:
                 entry["distance_km"] += distance
         try:
-            track = parse_workout(DATA / item["file"], include_track=True)["track"]
+            track = _track_for(item)
             progress, total_distance = track_progress(track)
             for target_distance in FASTEST_SECTION_DISTANCES_M:
                 section = fastest_section_from_progress(progress, total_distance, target_distance)

@@ -64,7 +64,8 @@ class WatcherTests(unittest.TestCase):
             delay = watch_board.sync_cycle(self.root, self.python, self.weather)
 
         self.assertEqual(delay, 3600)
-        run.assert_called_once_with([str(self.python), str(self.weather), "one.fit", "two.fit"], cwd=self.root)
+        self.assertEqual(run.call_count, 2)
+        run.assert_any_call([str(self.python), str(self.weather), "one.fit", "two.fit"], cwd=self.root)
 
     def test_partial_download_error_still_uses_cooldown(self):
         error = board_sync.BoardSyncError("second file failed", ["one.fit"])
@@ -72,7 +73,8 @@ class WatcherTests(unittest.TestCase):
             delay = watch_board.sync_cycle(self.root, self.python, self.weather)
 
         self.assertEqual(delay, 3600)
-        run.assert_called_once_with([str(self.python), str(self.weather), "one.fit"], cwd=self.root)
+        self.assertEqual(run.call_count, 2)
+        run.assert_any_call([str(self.python), str(self.weather), "one.fit"], cwd=self.root)
 
 
 if __name__ == "__main__":
