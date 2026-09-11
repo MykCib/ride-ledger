@@ -20,6 +20,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Allow running both as `python -m host.indexer` and as `python host/indexer.py`
+# (the watcher uses the latter, where sys.path[0] is host/ instead of root).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 DEFAULT_DB = DATA / "ledger.db"
@@ -365,6 +369,7 @@ def main(argv=None):
     parser.add_argument("--incremental", action="store_true", help="upsert new/changed only (default)")
     parser.add_argument("--check", action="store_true", help="exit 0 if DB is current, 2 if stale")
     parser.add_argument("--ride", help="re-ingest a single ride id")
+    parser.add_argument("--quiet", action="store_true", help="only print when files were added, removed, or failed")
     parser.add_argument("--db", help="override ledger.db path")
     parser.add_argument("--data", help="override data directory")
     args = parser.parse_args(argv)
@@ -401,7 +406,10 @@ def main(argv=None):
     else:
         stats = incremental(data_dir=data_dir, db_path=db_path)
     if stats.get("locked"):
-        print("indexer: another run holds the lock, skipping", flush=True)
+        if not args.quiet:
+            print("indexer: another run holds the lock, skipping", flush=True)
+        return 0
+    if args.quiet and not stats.get("upserted") and not stats.get("pruned") and not stats.get("failed"):
         return 0
     print(
         f"indexer: upserted {stats['upserted']}, pruned {stats['pruned']}, "

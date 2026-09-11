@@ -62,6 +62,19 @@ def sync_cycle(root, python, weather, indexer=None):
             _fail_streak = 0
             delay = _backoff_delay(_idle_streak)
             _idle_streak += 1
+            if INDEX_ON_SYNC:
+                # Heal a stale index (e.g. from a past indexer failure).
+                # No-op in milliseconds when everything is already indexed.
+                try:
+                    indexer_path = Path(indexer) if indexer else Path(root) / "host" / "indexer.py"
+                    heal = subprocess.run(
+                        [str(python), str(indexer_path), "--incremental", "--quiet"],
+                        cwd=root,
+                    )
+                    if heal.returncode != 0:
+                        print(f"Ride indexer exited with status {heal.returncode}", flush=True)
+                except Exception as error:
+                    print(f"Ride indexer error: {error}", file=sys.stderr, flush=True)
         else:
             # Device unreachable (usually asleep). Leave it alone longer.
             _idle_streak = 0

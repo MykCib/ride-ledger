@@ -146,6 +146,7 @@ class IndexerTests(unittest.TestCase):
 
     def test_watcher_runs_indexer_after_weather(self):
         from host import watch_board
+        watch_board._reset_backoff()
         with patch.object(watch_board, "sync_board", return_value=["one.fit"]), \
              patch.object(watch_board.subprocess, "run") as run, \
              patch.object(watch_board, "COOLDOWN_SECONDS", 3600), \
@@ -157,6 +158,40 @@ class IndexerTests(unittest.TestCase):
         indexer_cmd = run.call_args_list[1][0][0]
         self.assertIn("indexer.py", str(indexer_cmd[1]))
         self.assertIn("--incremental", indexer_cmd)
+
+    def test_indexer_runs_as_script_like_the_watcher_invokes_it(self):
+        """The watcher invokes ``python host/indexer.py`` rather than -m."""
+        import shutil
+        import subprocess
+        import sys as sys_module
+
+        root = Path(__file__).resolve().parent.parent
+        fits = sorted(root.glob("data/*.fit"))
+        if not fits:
+            self.skipTest("no real FIT files available")
+
+        with TemporaryDirectory() as directory:
+            data = Path(directory)
+            shutil.copy(fits[0], data / fits[0].name)
+            db = data / "ledger.db"
+            completed = subprocess.run(
+                [
+                    sys_module.executable,
+                    str(root / "host" / "indexer.py"),
+                    "--incremental",
+                    "--data",
+                    str(data),
+                    "--db",
+                    str(db),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+        self.assertEqual(completed.returncode, 0, msg=completed.stderr[-2000:])
+        self.assertIn("upserted 1", completed.stdout)
+        self.assertNotIn("No module named", completed.stderr)
 
 
 if __name__ == "__main__":
