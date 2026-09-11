@@ -50,6 +50,10 @@ class WatcherTests(unittest.TestCase):
         self.root = Path("/tmp/ride-ledger-test")
         self.python = Path("/tmp/ride-ledger-python")
         self.weather = Path("/tmp/ride-ledger-weather")
+        watch_board._reset_backoff()
+
+    def tearDown(self):
+        watch_board._reset_backoff()
 
     def test_empty_sync_uses_regular_retry_and_skips_weather(self):
         with patch.object(watch_board, "sync_board", return_value=[]), patch.object(watch_board.subprocess, "run") as run, patch.object(watch_board, "RETRY_SECONDS", 60):
@@ -75,6 +79,36 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(delay, 3600)
         self.assertEqual(run.call_count, 2)
         run.assert_any_call([str(self.python), str(self.weather), "one.fit"], cwd=self.root)
+
+    def test_idle_syncs_back_off_and_cap(self):
+        with patch.object(watch_board, "sync_board", return_value=[]), patch.object(watch_board.subprocess, "run") as run, patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_IDLE_SECONDS", 200):
+            delays = [watch_board.sync_cycle(self.root, self.python, self.weather) for _ in range(4)]
+
+        self.assertEqual(delays, [60, 120, 200, 200])
+        run.assert_not_called()
+
+    def test_unavailable_device_backs_off_to_leave_it_asleep(self):
+        error = board_sync.BoardSyncError("ERR xoss-unavailable")
+        with patch.object(watch_board, "sync_board", side_effect=error), patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_IDLE_SECONDS", 200):
+            delays = [watch_board.sync_cycle(self.root, self.python, self.weather) for _ in range(4)]
+
+        self.assertEqual(delays, [60, 120, 200, 200])
+
+    def test_new_files_reset_backoff(self):
+        with patch.object(watch_board, "sync_board", return_value=[]), patch.object(watch_board.subprocess, "run"), patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_IDLE_SECONDS", 200):
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+        with patch.object(watch_board, "sync_board", return_value=["one.fit"]), patch.object(watch_board.subprocess, "run", return_value=Mock(returncode=0)), patch.object(watch_board, "COOLDOWN_SECONDS", 3600):
+            self.assertEqual(watch_board.sync_cycle(self.root, self.python, self.weather), 3600)
+        with patch.object(watch_board, "sync_board", return_value=[]), patch.object(watch_board.subprocess, "run") as run, patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_IDLE_SECONDS", 200):
+            self.assertEqual(watch_board.sync_cycle(self.root, self.python, self.weather), 60)
+            run.assert_not_called()
+
+    def test_unexpected_watcher_error_backs_off(self):
+        with patch.object(watch_board, "sync_board", side_effect=RuntimeError("boom")), patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_IDLE_SECONDS", 200):
+            delays = [watch_board.sync_cycle(self.root, self.python, self.weather) for _ in range(3)]
+
+        self.assertEqual(delays, [60, 120, 200])
 
 
 if __name__ == "__main__":

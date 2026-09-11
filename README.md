@@ -167,10 +167,14 @@ manually, run:
 ```
 
 The watcher checks the XOSS through the bridge every 60 seconds when no new FIT
-files are available. After one or more new FIT files are downloaded, it closes
-the bridge connection and pauses all XOSS polling for one hour to let the device
-sleep. Set `XOSS_COOLDOWN_SECONDS` to change the cooldown. Existing FIT files
-are skipped and do not start the cooldown.
+files are available. While idle it backs off exponentially (60s, 2m, 4m, … up
+to 15 minutes) so repeated BLE connections don't keep the device awake; a
+missing device is treated as asleep and left alone the same way. Any new
+download resets the backoff. After one or more new FIT files are downloaded,
+it closes the bridge connection and pauses all XOSS polling for one hour to
+let the device sleep. Set `XOSS_COOLDOWN_SECONDS` to change the cooldown and
+`XOSS_MAX_IDLE_SECONDS` to change the idle backoff cap (default 900).
+Existing FIT files are skipped and do not start the cooldown.
 
 ## Homeserver prerequisites
 

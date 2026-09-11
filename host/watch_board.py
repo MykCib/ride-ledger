@@ -15,10 +15,31 @@ except ImportError:
 
 RETRY_SECONDS = float(os.environ.get("XOSS_RETRY_SECONDS", "60"))
 COOLDOWN_SECONDS = float(os.environ.get("XOSS_COOLDOWN_SECONDS", "3600"))
+MAX_IDLE_SECONDS = float(os.environ.get("XOSS_MAX_IDLE_SECONDS", "900"))
 INDEX_ON_SYNC = os.environ.get("INDEX_ON_SYNC", "1").strip() not in ("0", "false", "no", "")
+
+# Consecutive-cycle counters driving adaptive backoff. A successful BLE
+# connection can keep the XOSS awake, so polling every 60s forever creates a
+# loop: device wakes -> watcher connects within a minute -> device stays
+# awake. Backing off while idle lets the device sleep; a missing device
+# (asleep = desired state) is likewise left alone with growing intervals.
+_idle_streak = 0
+_fail_streak = 0
+
+
+def _reset_backoff():
+    global _idle_streak, _fail_streak
+    _idle_streak = 0
+    _fail_streak = 0
+
+
+def _backoff_delay(streak):
+    delay = RETRY_SECONDS * (2 ** min(streak, 10))
+    return max(1.0, min(delay, MAX_IDLE_SECONDS))
 
 
 def sync_cycle(root, python, weather, indexer=None):
+    global _idle_streak, _fail_streak
     sync_failed = False
     try:
         new_files = list(sync_board())
@@ -28,12 +49,29 @@ def sync_cycle(root, python, weather, indexer=None):
         print(f"Sync failed: {error}", file=sys.stderr, flush=True)
     except Exception as error:
         print(f"Watcher error: {error}", file=sys.stderr, flush=True)
-        return RETRY_SECONDS
+        _idle_streak = 0
+        delay = _backoff_delay(_fail_streak)
+        _fail_streak += 1
+        if delay > RETRY_SECONDS:
+            print(f"Next check in {delay:g} seconds (backoff)", flush=True)
+        return delay
 
     if not new_files:
         if not sync_failed:
             print("Sync complete: no new FIT files", flush=True)
-        return RETRY_SECONDS
+            _fail_streak = 0
+            delay = _backoff_delay(_idle_streak)
+            _idle_streak += 1
+        else:
+            # Device unreachable (usually asleep). Leave it alone longer.
+            _idle_streak = 0
+            delay = _backoff_delay(_fail_streak)
+            _fail_streak += 1
+        if delay > RETRY_SECONDS:
+            print(f"Next check in {delay:g} seconds (backoff)", flush=True)
+        return delay
+
+    _reset_backoff()
 
     if sync_failed:
         print(f"Sync saved {len(new_files)} new FIT file(s) before failure", flush=True)
