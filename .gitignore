@@ -19,3 +19,4 @@ data/location_names.json
 .idea/
 .vscode/
 *.swp
+data/
