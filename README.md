@@ -166,15 +166,31 @@ manually, run:
 .venv/bin/python host/weather_cache.py
 ```
 
-The watcher checks the XOSS through the bridge every 60 seconds when no new FIT
-files are available. While idle it backs off exponentially (60s, 2m, 4m, … up
-to 15 minutes) so repeated BLE connections don't keep the device awake; a
-missing device is treated as asleep and left alone the same way. Any new
-download resets the backoff. After one or more new FIT files are downloaded,
-it closes the bridge connection and pauses all XOSS polling for one hour to
-let the device sleep. Set `XOSS_COOLDOWN_SECONDS` to change the cooldown and
-`XOSS_MAX_IDLE_SECONDS` to change the idle backoff cap (default 900).
-Existing FIT files are skipped and do not start the cooldown.
+The watcher checks the XOSS through the bridge when no new FIT files are
+available. When the device is reachable but idle it backs off exponentially
+(60s, 2m, 4m, … up to 15 minutes) so repeated BLE connections don't keep it
+awake. When the device is unreachable (asleep or switched off) scanning does
+not wake it, so it keeps retrying every 60s up to 2 minutes and picks it up
+within a couple of minutes of being switched on. Any new download resets the
+backoff. After one or more new FIT files are downloaded, it closes the bridge
+connection and pauses all XOSS polling for one hour to let the device sleep.
+Set `XOSS_COOLDOWN_SECONDS` to change the cooldown, `XOSS_MAX_IDLE_SECONDS`
+for the idle cap (default 900), and `XOSS_MAX_ASLEEP_SECONDS` for the
+unreachable cap (default 120). Existing FIT files are skipped and do not
+start the cooldown.
+
+ArduinoBLE's scanner can silently wedge after several days of uptime: the
+bridge still answers `PING` but never reports the XOSS. When the device stays
+invisible for `XOSS_BOARD_RESET_AFTER` consecutive checks (default 5, `0`
+disables) the watcher sends `RESET`, which reboots the UNO bridge and clears
+the scanner.
+
+To force a sync immediately (for example right after switching the XOSS on),
+run a single cycle:
+
+```sh
+.venv/bin/python host/watch_board.py --once
+```
 
 ## Homeserver prerequisites
 

@@ -95,6 +95,36 @@ def close_board(port):
         return
 
 
+def reset_board():
+    """Reboot the UNO bridge to clear a wedged BLE stack.
+
+    Returns True when the firmware acknowledged the RESET command. The board
+    restarts a moment later, so the caller should allow it time to come back.
+    """
+    try:
+        port = serial.Serial(BOARD_PORT, BAUD, timeout=2, write_timeout=5)
+    except (serial.SerialException, OSError):
+        return False
+    try:
+        time.sleep(0.2)
+        port.reset_input_buffer()
+        port.write(b"RESET\n")
+        port.flush()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            line = port.readline()
+            if line.strip() == b"OK":
+                return True
+        return False
+    except (serial.SerialException, OSError):
+        return False
+    finally:
+        try:
+            port.close()
+        except Exception:
+            pass
+
+
 def fit_filenames(index_path):
     try:
         index = json.loads(index_path.read_text())

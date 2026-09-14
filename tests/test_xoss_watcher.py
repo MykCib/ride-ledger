@@ -44,6 +44,13 @@ class BoardSyncTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.downloaded_files, ("first.fit",))
 
+    def test_reset_board_writes_reset_and_waits_for_ack(self):
+        port = Mock()
+        port.readline.return_value = b"OK\n"
+        with patch.object(board_sync.serial, "Serial", return_value=port):
+            self.assertTrue(board_sync.reset_board())
+        port.write.assert_called_once_with(b"RESET\n")
+
 
 class WatcherTests(unittest.TestCase):
     def setUp(self):
@@ -99,12 +106,19 @@ class WatcherTests(unittest.TestCase):
 
         self.assertEqual(delays, [60, 120])
 
-    def test_unavailable_device_backs_off_to_leave_it_asleep(self):
+    def test_unavailable_device_retries_quickly_up_to_its_own_cap(self):
         error = board_sync.BoardSyncError("ERR xoss-unavailable")
-        with patch.object(watch_board, "sync_board", side_effect=error), patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_IDLE_SECONDS", 200):
+        with patch.object(watch_board, "sync_board", side_effect=error), patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_IDLE_SECONDS", 900), patch.object(watch_board, "MAX_ASLEEP_SECONDS", 200):
             delays = [watch_board.sync_cycle(self.root, self.python, self.weather) for _ in range(4)]
 
         self.assertEqual(delays, [60, 120, 200, 200])
+
+    def test_asleep_cap_is_much_lower_than_idle_cap_by_default(self):
+        # Scanning an asleep device does not wake it, so unavailable retries
+        # stay frequent; connecting to a reachable idle device backs off harder.
+        with patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_IDLE_SECONDS", 900), patch.object(watch_board, "MAX_ASLEEP_SECONDS", 120):
+            self.assertEqual(watch_board._backoff_delay(10, cap=watch_board.MAX_ASLEEP_SECONDS), 120)
+            self.assertEqual(watch_board._backoff_delay(10), 900)
 
     def test_new_files_reset_backoff(self):
         with patch.object(watch_board, "sync_board", return_value=[]), patch.object(watch_board.subprocess, "run"), patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_IDLE_SECONDS", 200):
@@ -118,10 +132,44 @@ class WatcherTests(unittest.TestCase):
             self.assertIn("--incremental", run.call_args[0][0])
 
     def test_unexpected_watcher_error_backs_off(self):
-        with patch.object(watch_board, "sync_board", side_effect=RuntimeError("boom")), patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_IDLE_SECONDS", 200):
+        with patch.object(watch_board, "sync_board", side_effect=RuntimeError("boom")), patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_ASLEEP_SECONDS", 200):
             delays = [watch_board.sync_cycle(self.root, self.python, self.weather) for _ in range(3)]
 
         self.assertEqual(delays, [60, 120, 200])
+
+    def test_once_mode_runs_a_single_cycle(self):
+        with patch.object(watch_board, "sync_board", return_value=[]), patch.object(watch_board.subprocess, "run", return_value=Mock(returncode=0)) as run, patch.object(watch_board, "RETRY_SECONDS", 60):
+            result = watch_board.main(["--once"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run.call_count, 1)
+
+    def test_wedge_watchdog_reboots_bridge_after_repeated_misses(self):
+        error = board_sync.BoardSyncError("ERR xoss-unavailable")
+        with patch.object(watch_board, "sync_board", side_effect=error), patch.object(watch_board, "reset_board", return_value=True) as reset, patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_ASLEEP_SECONDS", 120), patch.object(watch_board, "BOARD_RESET_AFTER", 3):
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+            reset.assert_not_called()
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+            reset.assert_called_once()
+
+    def test_wedge_watchdog_ignores_unrelated_sync_errors(self):
+        error = board_sync.BoardSyncError("ERR transfer-failed")
+        with patch.object(watch_board, "sync_board", side_effect=error), patch.object(watch_board, "reset_board", return_value=True) as reset, patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_ASLEEP_SECONDS", 120), patch.object(watch_board, "BOARD_RESET_AFTER", 1):
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+
+        reset.assert_not_called()
+
+    def test_reachable_device_clears_wedge_counter(self):
+        error = board_sync.BoardSyncError("ERR xoss-unavailable")
+        with patch.object(watch_board, "sync_board", side_effect=error), patch.object(watch_board, "reset_board", return_value=True) as reset, patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_ASLEEP_SECONDS", 120), patch.object(watch_board, "BOARD_RESET_AFTER", 3):
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+        with patch.object(watch_board, "sync_board", return_value=[]), patch.object(watch_board.subprocess, "run", return_value=Mock(returncode=0)), patch.object(watch_board, "MAX_IDLE_SECONDS", 900):
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+        with patch.object(watch_board, "sync_board", side_effect=error), patch.object(watch_board, "reset_board", return_value=True) as reset2, patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_ASLEEP_SECONDS", 120), patch.object(watch_board, "BOARD_RESET_AFTER", 3):
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+            reset2.assert_not_called()
 
 
 if __name__ == "__main__":

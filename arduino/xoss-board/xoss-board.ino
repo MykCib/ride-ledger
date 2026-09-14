@@ -494,6 +494,15 @@ void handle_command(char* command) {
     Serial.println("PONG");
     return;
   }
+  if (strcmp(command, "RESET") == 0) {
+    // Acknowledge first, then reboot. Used by the host to recover a wedged
+    // BLE stack without physically touching the board.
+    Serial.println("OK");
+    Serial.flush();
+    delay(50);
+    NVIC_SystemReset();
+    return;
+  }
   if (strcmp(command, "CLOSE") == 0) {
     disconnect_xoss();
     Serial.println("OK");
