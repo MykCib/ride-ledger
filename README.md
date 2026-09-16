@@ -179,11 +179,14 @@ for the idle cap (default 900), and `XOSS_MAX_ASLEEP_SECONDS` for the
 unreachable cap (default 120). Existing FIT files are skipped and do not
 start the cooldown.
 
-ArduinoBLE's scanner can silently wedge after several days of uptime: the
-bridge still answers `PING` but never reports the XOSS. When the device stays
-invisible for `XOSS_BOARD_RESET_AFTER` consecutive checks (default 5, `0`
-disables) the watcher sends `RESET`, which reboots the UNO bridge and clears
-the scanner.
+The bridge's radio can silently wedge after long uptime: it still answers
+`PING` but either never reports the XOSS (`xoss-unavailable`) or fails to
+start BLE at all (`ble-not-ready`). When the radio stays stuck for
+`XOSS_BOARD_RESET_AFTER` consecutive checks (default 5, `0` disables) the
+watcher sends `RESET`, which reboots the UNO bridge and clears it. Reboots
+are throttled to one per `XOSS_BOARD_RESET_COOLDOWN_SECONDS` (default 1800)
+because `xoss-unavailable` also happens when the device is simply switched
+off.
 
 To force a sync immediately (for example right after switching the XOSS on),
 run a single cycle:

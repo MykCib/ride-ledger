@@ -160,6 +160,24 @@ class WatcherTests(unittest.TestCase):
 
         reset.assert_not_called()
 
+    def test_wedge_watchdog_recovers_ble_not_ready(self):
+        # The bridge failing to start BLE ("ble-not-ready") also needs a reboot.
+        error = board_sync.BoardSyncError("ERR ble-not-ready")
+        with patch.object(watch_board, "sync_board", side_effect=error), patch.object(watch_board, "reset_board", return_value=True) as reset, patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_ASLEEP_SECONDS", 120), patch.object(watch_board, "BOARD_RESET_AFTER", 2):
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+            reset.assert_not_called()
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+            reset.assert_called_once()
+
+    def test_bridge_reboots_are_throttled(self):
+        error = board_sync.BoardSyncError("ERR ble-not-ready")
+        with patch.object(watch_board, "sync_board", side_effect=error), patch.object(watch_board, "reset_board", return_value=True) as reset, patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_ASLEEP_SECONDS", 120), patch.object(watch_board, "BOARD_RESET_AFTER", 1), patch.object(watch_board, "BOARD_RESET_COOLDOWN_SECONDS", 3600):
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+            watch_board.sync_cycle(self.root, self.python, self.weather)
+
+        reset.assert_called_once()
+
     def test_reachable_device_clears_wedge_counter(self):
         error = board_sync.BoardSyncError("ERR xoss-unavailable")
         with patch.object(watch_board, "sync_board", side_effect=error), patch.object(watch_board, "reset_board", return_value=True) as reset, patch.object(watch_board, "RETRY_SECONDS", 60), patch.object(watch_board, "MAX_ASLEEP_SECONDS", 120), patch.object(watch_board, "BOARD_RESET_AFTER", 3):

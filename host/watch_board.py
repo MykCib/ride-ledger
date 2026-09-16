@@ -18,6 +18,13 @@ COOLDOWN_SECONDS = float(os.environ.get("XOSS_COOLDOWN_SECONDS", "3600"))
 MAX_IDLE_SECONDS = float(os.environ.get("XOSS_MAX_IDLE_SECONDS", "900"))
 MAX_ASLEEP_SECONDS = float(os.environ.get("XOSS_MAX_ASLEEP_SECONDS", "120"))
 BOARD_RESET_AFTER = int(os.environ.get("XOSS_BOARD_RESET_AFTER", "5"))
+BOARD_RESET_COOLDOWN_SECONDS = float(
+    os.environ.get("XOSS_BOARD_RESET_COOLDOWN_SECONDS", "1800")
+)
+# Bridge errors that mean the radio cannot serve a request and a reboot may
+# clear it. "xoss-unavailable" also happens when the device is simply off, so
+# reboots are throttled rather than fired on every miss.
+BRIDGE_RECOVERABLE_ERRORS = ("xoss-unavailable", "ble-not-ready")
 INDEX_ON_SYNC = os.environ.get("INDEX_ON_SYNC", "1").strip() not in ("0", "false", "no", "")
 
 # Consecutive-cycle counters driving adaptive backoff. A successful BLE
@@ -27,34 +34,47 @@ INDEX_ON_SYNC = os.environ.get("INDEX_ON_SYNC", "1").strip() not in ("0", "false
 # retrying quickly to catch it as soon as the user turns it on.
 _idle_streak = 0
 _fail_streak = 0
-_unavailable_streak = 0
+_bridge_stuck_streak = 0
+_last_bridge_reset = 0.0
 
 
 def _reset_backoff():
-    global _idle_streak, _fail_streak, _unavailable_streak
+    global _idle_streak, _fail_streak, _bridge_stuck_streak, _last_bridge_reset
     _idle_streak = 0
     _fail_streak = 0
-    _unavailable_streak = 0
+    _bridge_stuck_streak = 0
+    _last_bridge_reset = 0.0
 
 
-def _maybe_reset_bridge(is_unavailable):
-    """Reboot the bridge after repeated misses.
+def _bridge_error_is_recoverable(error):
+    message = str(error).lower()
+    return any(code in message for code in BRIDGE_RECOVERABLE_ERRORS)
 
-    ArduinoBLE's scan can wedge after several days of uptime: the firmware
-    still answers PING but never reports the XOSS. A reboot clears it. Only a
-    genuine "xoss-unavailable" counts; transport errors are left alone.
+
+def _maybe_reset_bridge(bridge_stuck):
+    """Reboot the bridge after repeated failures.
+
+    ArduinoBLE's stack can wedge after long uptime: the firmware still answers
+    PING but either never reports the XOSS ("xoss-unavailable") or fails to
+    start BLE at all ("ble-not-ready"). A reboot clears both. Reboots are
+    throttled because "xoss-unavailable" also happens when the device is
+    simply switched off.
     """
-    global _unavailable_streak
-    if not is_unavailable or BOARD_RESET_AFTER <= 0:
-        _unavailable_streak = 0
+    global _bridge_stuck_streak, _last_bridge_reset
+    if not bridge_stuck or BOARD_RESET_AFTER <= 0:
+        _bridge_stuck_streak = 0
         return
-    _unavailable_streak += 1
-    if _unavailable_streak < BOARD_RESET_AFTER:
+    _bridge_stuck_streak += 1
+    if _bridge_stuck_streak < BOARD_RESET_AFTER:
         return
-    _unavailable_streak = 0
+    _bridge_stuck_streak = 0
+    now = time.monotonic()
+    if now - _last_bridge_reset < BOARD_RESET_COOLDOWN_SECONDS:
+        return
+    _last_bridge_reset = now
     try:
         if reset_board():
-            print("Bridge scanner looked wedged; rebooted the UNO bridge", flush=True)
+            print("Bridge radio looked stuck; rebooted the UNO bridge", flush=True)
         else:
             print("Bridge did not acknowledge reset request", file=sys.stderr, flush=True)
     except Exception as error:
@@ -68,14 +88,14 @@ def _backoff_delay(streak, cap=None):
 
 
 def sync_cycle(root, python, weather, indexer=None):
-    global _idle_streak, _fail_streak, _unavailable_streak
+    global _idle_streak, _fail_streak, _bridge_stuck_streak
     sync_failed = False
-    unavailable = False
+    bridge_stuck = False
     try:
         new_files = list(sync_board())
     except BoardSyncError as error:
         sync_failed = True
-        unavailable = "xoss-unavailable" in str(error).lower()
+        bridge_stuck = _bridge_error_is_recoverable(error)
         new_files = list(error.downloaded_files)
         print(f"Sync failed: {error}", file=sys.stderr, flush=True)
     except Exception as error:
@@ -91,7 +111,7 @@ def sync_cycle(root, python, weather, indexer=None):
         if not sync_failed:
             print("Sync complete: no new FIT files", flush=True)
             _fail_streak = 0
-            _unavailable_streak = 0
+            _bridge_stuck_streak = 0
             delay = _backoff_delay(_idle_streak)
             _idle_streak += 1
             if INDEX_ON_SYNC:
@@ -108,12 +128,12 @@ def sync_cycle(root, python, weather, indexer=None):
                 except Exception as error:
                     print(f"Ride indexer error: {error}", file=sys.stderr, flush=True)
         else:
-            # Device unreachable (asleep/off or a wedged bridge scanner).
-            # Keep retrying quickly so a freshly woken device is picked up
-            # within a couple of minutes, and reboot the bridge if it stays
-            # invisible for several cycles.
+            # Device unreachable (asleep/off or a wedged bridge radio). Keep
+            # retrying quickly so a freshly woken device is picked up within a
+            # couple of minutes, and reboot the bridge if it stays stuck for
+            # several cycles.
             _idle_streak = 0
-            _maybe_reset_bridge(unavailable)
+            _maybe_reset_bridge(bridge_stuck)
             delay = _backoff_delay(_fail_streak, cap=MAX_ASLEEP_SECONDS)
             _fail_streak += 1
         if delay > RETRY_SECONDS:
